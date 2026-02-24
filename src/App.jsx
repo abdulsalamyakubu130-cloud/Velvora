@@ -86,7 +86,7 @@ function AppLayout() {
         className={
           isAdminArea
             ? 'mx-auto w-full max-w-6xl px-3 pb-10 pt-6 md:px-6'
-            : 'mx-auto w-full max-w-7xl px-3 pb-32 pt-6 md:px-6 md:pb-10'
+            : 'mx-auto w-full max-w-7xl px-3 pb-24 pt-6 md:px-6 md:pb-10'
         }
       >
         <Suspense fallback={<RouteFallback />}>
