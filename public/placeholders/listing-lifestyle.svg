@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900" role="img" aria-label="Lifestyle listing placeholder">
+  <defs>
+    <linearGradient id="g" x1="1" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fff3e7" />
+      <stop offset="100%" stop-color="#ffd9bf" />
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="900" fill="url(#g)" />
+  <rect x="120" y="130" width="1040" height="640" rx="36" fill="#ffffff" opacity="0.86" />
+  <path d="M250 560c120-210 250-210 370 0 120-210 250-210 370 0" fill="none" stroke="#f0b98d" stroke-width="42" stroke-linecap="round" />
+  <rect x="260" y="290" width="760" height="70" rx="18" fill="#ffe7d4" />
+  <text x="640" y="670" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="54" fill="#8f4f28">LIFESTYLE LISTING</text>
+</svg>

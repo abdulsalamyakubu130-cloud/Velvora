@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-brand: 'Trebuchet MS', 'Segoe UI', sans-serif;
+  --font-body: 'Segoe UI', Tahoma, Arial, sans-serif;
+  --canvas: #f6fbf7;
+  --panel: #ffffff;
+  --ink: #13221a;
+  --muted: #5d6b62;
+  --line: #d9e8dd;
+  --accent: #237b4b;
+  --accent-strong: #165737;
+  --accent-soft: #e6f5eb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  color: var(--ink);
+  background: var(--canvas);
+}
+
+.ambient-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(52, 149, 91, 0.18), transparent 36%),
+    radial-gradient(circle at 100% 0%, rgba(40, 128, 73, 0.12), transparent 38%),
+    radial-gradient(circle at 50% 100%, rgba(26, 98, 56, 0.08), transparent 44%),
+    var(--canvas);
+}
+
+@layer components {
+  .surface {
+    @apply rounded-2xl border border-line bg-panel shadow-soft;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center rounded-full bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accentStrong;
+  }
+
+  .btn-muted {
+    @apply inline-flex items-center justify-center rounded-full border border-line bg-white px-4 py-2 text-sm font-semibold text-ink transition hover:border-accent hover:text-accent;
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-line bg-white px-3 py-2 text-sm text-ink outline-none transition focus:border-accent focus:ring-2 focus:ring-accent;
+  }
+
+  .pill {
+    @apply inline-flex items-center rounded-full bg-accentSoft px-2.5 py-1 text-xs font-semibold text-accentStrong;
+  }
+}

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900" role="img" aria-label="Tech listing placeholder">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#e9f3ff" />
+      <stop offset="100%" stop-color="#c7ddf7" />
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="900" fill="url(#g)" />
+  <rect x="130" y="120" width="1020" height="660" rx="40" fill="#ffffff" opacity="0.86" />
+  <rect x="260" y="250" width="760" height="220" rx="24" fill="#d5e6fa" />
+  <rect x="310" y="560" width="280" height="46" rx="14" fill="#c5dbf5" />
+  <rect x="690" y="560" width="280" height="46" rx="14" fill="#c5dbf5" />
+  <text x="640" y="670" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="54" fill="#1f4f84">TECH LISTING</text>
+</svg>

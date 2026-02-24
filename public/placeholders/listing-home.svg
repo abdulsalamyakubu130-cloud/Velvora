@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900" role="img" aria-label="Home listing placeholder">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#e7f5eb" />
+      <stop offset="100%" stop-color="#c9e8d3" />
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="900" fill="url(#g)" />
+  <rect x="120" y="130" width="1040" height="640" rx="36" fill="#ffffff" opacity="0.85" />
+  <rect x="210" y="260" width="860" height="70" rx="18" fill="#d0ead9" />
+  <rect x="210" y="370" width="630" height="50" rx="14" fill="#dff1e6" />
+  <rect x="210" y="450" width="720" height="50" rx="14" fill="#dff1e6" />
+  <text x="640" y="585" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="54" fill="#19643f">HOME LISTING</text>
+</svg>
