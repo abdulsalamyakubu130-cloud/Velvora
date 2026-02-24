@@ -10,18 +10,18 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.57.4",
-    "clsx": "^2.1.1",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "react-router-dom": "^7.8.2"
-  },
-  "devDependencies": {
     "@vitejs/plugin-react": "^5.1.0",
     "autoprefixer": "^10.4.20",
-    "eslint": "^9.39.1",
+    "@supabase/supabase-js": "^2.57.4",
+    "clsx": "^2.1.1",
     "postcss": "^8.5.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.8.2",
     "tailwindcss": "^3.4.17",
     "vite": "^7.1.5"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.1"
   }
 }
