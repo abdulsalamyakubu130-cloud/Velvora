@@ -1,0 +1,35 @@
+<svg width="640" height="360" viewBox="0 0 640 360" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="640" y2="360" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#EAF8EF"/>
+      <stop offset="1" stop-color="#D9F0E3"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="360" rx="24" fill="url(#bg)"/>
+  <rect x="58" y="84" width="524" height="210" rx="16" fill="#FFFFFF" stroke="#CFE4D7" stroke-width="4"/>
+  <rect x="58" y="84" width="524" height="58" rx="16" fill="#1F7A4A"/>
+  <rect x="58" y="126" width="524" height="16" fill="#1F7A4A"/>
+  <circle cx="112" cy="112" r="10" fill="#E6F5EB"/>
+  <circle cx="142" cy="112" r="10" fill="#E6F5EB"/>
+  <circle cx="172" cy="112" r="10" fill="#E6F5EB"/>
+  <text x="320" y="120" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="700" fill="#FFFFFF">Velvora Marketplace</text>
+
+  <rect x="94" y="166" width="132" height="88" rx="12" fill="#F4FAF7" stroke="#D6EBDD" stroke-width="3"/>
+  <rect x="254" y="166" width="132" height="88" rx="12" fill="#F4FAF7" stroke="#D6EBDD" stroke-width="3"/>
+  <rect x="414" y="166" width="132" height="88" rx="12" fill="#F4FAF7" stroke="#D6EBDD" stroke-width="3"/>
+
+  <rect x="118" y="186" width="84" height="14" rx="7" fill="#2E8D58"/>
+  <rect x="118" y="210" width="64" height="10" rx="5" fill="#97B9A7"/>
+  <rect x="118" y="226" width="48" height="10" rx="5" fill="#B6CEC2"/>
+
+  <circle cx="320" cy="206" r="26" fill="#2E8D58"/>
+  <path d="M309 205h22M320 194v22" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round"/>
+  <rect x="286" y="238" width="68" height="10" rx="5" fill="#97B9A7"/>
+
+  <path d="M443 236h74l-8-30h-58l-8 30z" fill="#2E8D58"/>
+  <path d="M457 206l8-16h30l8 16" stroke="#2E8D58" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="460" cy="246" r="8" fill="#1F7A4A"/>
+  <circle cx="500" cy="246" r="8" fill="#1F7A4A"/>
+
+  <rect x="186" y="274" width="268" height="14" rx="7" fill="#D2E8DB"/>
+</svg>

@@ -14,7 +14,7 @@ export default function AdminSignInPage() {
   const location = useLocation()
   const { isAuthenticated, isLoading, user, signInWithPassword, signOut } = useAuth()
   const [pending, setPending] = useState(false)
-  const [email, setEmail] = useState('')
+  const [email, setEmail] = useState('velvora278@gmail.com')
   const [accountPassword, setAccountPassword] = useState('')
   const [panelPassword, setPanelPassword] = useState('')
   const [feedback, setFeedback] = useState('')
@@ -41,7 +41,7 @@ export default function AdminSignInPage() {
       return
     }
 
-    if (panelPassword !== ADMIN_PANEL_PASSWORD) {
+    if (panelPassword.trim() !== ADMIN_PANEL_PASSWORD.trim()) {
       setPending(false)
       setFeedback('Incorrect control room password.')
       return

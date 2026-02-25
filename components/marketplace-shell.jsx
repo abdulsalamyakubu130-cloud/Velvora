@@ -5,9 +5,8 @@ import PostCard from '@/components/post-card'
 import RightRail from '@/components/right-rail'
 import { useI18n } from '@/src/context/i18n-context'
 
-export default function MarketplaceShell({ title, subtitle, posts, initialView = 'feed' }) {
+export default function MarketplaceShell({ title, subtitle, posts }) {
   const { t } = useI18n()
-  const [view, setView] = useState(initialView)
   const [visibleCount, setVisibleCount] = useState(4)
   const sentinelRef = useRef(null)
 
@@ -43,26 +42,6 @@ export default function MarketplaceShell({ title, subtitle, posts, initialView =
             </div>
 
             <div className="flex items-center gap-2">
-              <div className="rounded-full border border-line bg-white p-1">
-                <button
-                  type="button"
-                  onClick={() => setView('feed')}
-                  className={`rounded-full px-4 py-2 text-xs font-semibold transition ${
-                    view === 'feed' ? 'bg-accent text-white' : 'text-muted hover:text-accentStrong'
-                  }`}
-                >
-                  {t('market.feed')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setView('grid')}
-                  className={`rounded-full px-4 py-2 text-xs font-semibold transition ${
-                    view === 'grid' ? 'bg-accent text-white' : 'text-muted hover:text-accentStrong'
-                  }`}
-                >
-                  {t('market.grid')}
-                </button>
-              </div>
               <Link to="/sell" className="btn-primary">
                 {t('market.create_post')}
               </Link>
@@ -70,9 +49,9 @@ export default function MarketplaceShell({ title, subtitle, posts, initialView =
           </div>
         </header>
 
-        <div className={view === 'feed' ? 'space-y-4' : 'grid grid-cols-1 gap-4 sm:grid-cols-2'}>
+        <div className="space-y-4">
           {visiblePosts.map((post) => (
-            <PostCard key={post.id} post={post} compact={view === 'grid'} />
+            <PostCard key={post.id} post={post} />
           ))}
         </div>
 

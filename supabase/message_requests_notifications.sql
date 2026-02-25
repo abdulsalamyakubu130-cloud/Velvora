@@ -1,5 +1,21 @@
 create extension if not exists pgcrypto;
 
+do $$
+begin
+  if exists (select 1 from pg_type where typname = 'notification_type')
+     and not exists (
+       select 1
+       from pg_enum e
+       join pg_type t on t.oid = e.enumtypid
+       where t.typname = 'notification_type'
+         and e.enumlabel = 'post'
+     ) then
+    alter type public.notification_type add value 'post';
+  end if;
+exception
+  when duplicate_object then null;
+end $$;
+
 alter table public.notifications
   add column if not exists actor_id uuid references public.users(id) on delete set null,
   add column if not exists title text,
@@ -336,6 +352,44 @@ drop trigger if exists after_followers_insert_notify on public.followers;
 create trigger after_followers_insert_notify
 after insert on public.followers
 for each row execute procedure public.notify_on_new_follow();
+
+create or replace function public.notify_followers_on_new_post()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  author_username text;
+  post_title text;
+begin
+  select coalesce(nullif(u.username, ''), 'user')
+  into author_username
+  from public.users u
+  where u.id = new.user_id;
+
+  post_title := left(trim(coalesce(new.title, 'New listing')), 80);
+
+  insert into public.notifications (user_id, type, reference_id, actor_id, title, body)
+  select
+    f.follower_id,
+    'post',
+    new.id,
+    new.user_id,
+    format('New post from @%s', author_username),
+    format('@%s posted: %s', author_username, post_title)
+  from public.followers f
+  where f.following_id = new.user_id
+    and f.follower_id <> new.user_id;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists after_posts_insert_notify_followers on public.posts;
+create trigger after_posts_insert_notify_followers
+after insert on public.posts
+for each row execute procedure public.notify_followers_on_new_post();
 
 create or replace function public.notify_on_new_like()
 returns trigger

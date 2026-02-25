@@ -53,25 +53,30 @@ Social commerce marketplace web app built with React (JSX) + Vite + Tailwind + S
    - `VITE_SUPABASE_ANON_KEY`
    - `VITE_SUPABASE_PROFILE_PICTURE_BUCKET` (preferred, default: `avatars`)
    - `VITE_SUPABASE_AVATAR_BUCKET` (legacy fallback, default: `avatars`)
+   - `VITE_AUTH_REDIRECT_URL` (example: `http://localhost:5173/auth`)
+   - `VITE_ADMIN_PANEL_PASSWORD`
+   - `VITE_ADMIN_EMAILS` (comma-separated admin emails)
 4. Run dev server:
    - `npm run dev`
 
 ## Deploy To Vercel
 
-1. Push this project to GitHub/GitLab/Bitbucket.
-2. In Vercel, click `Add New Project` and import the repo.
-3. If your repo root contains this app in a subfolder, set `Root Directory` to `velvora`.
-4. Set these environment variables in Vercel Project Settings:
+1. Push this project to GitHub.
+2. In Vercel, import the repository.
+3. If Vercel asks for Root Directory, set it to `velvora` (if your repo has this app in a subfolder).
+4. Set environment variables in Vercel Project Settings:
    - `VITE_SUPABASE_URL`
    - `VITE_SUPABASE_ANON_KEY`
-   - `VITE_SUPABASE_PROFILE_PICTURE_BUCKET` (recommended, e.g. `avatars`)
-   - `VITE_SUPABASE_AVATAR_BUCKET` (legacy fallback, optional)
-   - `VITE_AUTH_REDIRECT_URL` (set to your Vercel domain, e.g. `https://your-app.vercel.app/auth`)
+   - `VITE_SUPABASE_PROFILE_PICTURE_BUCKET` (optional, default `avatars`)
+   - `VITE_SUPABASE_AVATAR_BUCKET` (optional legacy fallback)
+   - `VITE_AUTH_REDIRECT_URL` (set to `https://YOUR_DOMAIN/auth`)
+   - `VITE_ADMIN_PANEL_PASSWORD`
+   - `VITE_ADMIN_EMAILS`
 5. Deploy.
 
 Notes:
-- `vercel.json` is included with SPA rewrite to support React Router paths like `/profile/:username`.
-- After first deploy, add your Vercel domain to Supabase Auth allowed redirect URLs.
+- `vercel.json` is included with SPA rewrite so routes like `/profile/:username` and `/settings` work after refresh.
+- Add your Vercel domain to Supabase Auth allowed redirect URLs.
 
 ## Supabase Setup
 

@@ -264,7 +264,7 @@ export default function SettingsPage() {
     if (existingRequest?.status === 'rejected') {
       setKycPending(false)
       setKycRequestStatus(`rejected (${existingRequest.tier_requested})`)
-      setKycFeedback('This tier was previously rejected. Contact support or request a different tier.')
+      setKycFeedback('This tier was previously rejected. Contact admin or request a different tier.')
       return
     }
 
@@ -495,3 +495,4 @@ export default function SettingsPage() {
     </div>
   )
 }
+

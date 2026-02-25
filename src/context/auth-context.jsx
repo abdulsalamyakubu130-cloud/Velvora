@@ -3,6 +3,39 @@ import { getSupabaseBrowserClient, isSupabaseConfigured } from '@/lib/supabase/c
 
 const AuthContext = createContext(null)
 
+function isLocalHostName(hostname) {
+  return hostname === 'localhost' || hostname === '127.0.0.1'
+}
+
+function resolveAuthRedirectUrl() {
+  const envRedirect = String(import.meta.env.VITE_AUTH_REDIRECT_URL || '').trim()
+
+  if (typeof window !== 'undefined') {
+    const originRedirect = `${window.location.origin}/auth`
+
+    if (!envRedirect) {
+      return originRedirect
+    }
+
+    try {
+      const parsedEnvRedirect = new URL(envRedirect)
+      const envIsLocal = isLocalHostName(parsedEnvRedirect.hostname)
+      const currentIsLocal = isLocalHostName(window.location.hostname)
+
+      if (envIsLocal && !currentIsLocal) {
+        // Ignore localhost redirect in production-like environments.
+        return originRedirect
+      }
+
+      return parsedEnvRedirect.toString()
+    } catch {
+      return originRedirect
+    }
+  }
+
+  return envRedirect || undefined
+}
+
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -64,7 +97,7 @@ export function AuthProvider({ children }) {
       email,
       password,
       options: {
-        emailRedirectTo: import.meta.env.VITE_AUTH_REDIRECT_URL || undefined,
+        emailRedirectTo: resolveAuthRedirectUrl(),
         data: {
           phone,
           username,
@@ -100,7 +133,7 @@ export function AuthProvider({ children }) {
       type: 'signup',
       email,
       options: {
-        emailRedirectTo: import.meta.env.VITE_AUTH_REDIRECT_URL || undefined,
+        emailRedirectTo: resolveAuthRedirectUrl(),
       },
     })
   }
@@ -109,7 +142,7 @@ export function AuthProvider({ children }) {
     const supabase = getSupabaseBrowserClient()
     if (!supabase) return { error: new Error('Authentication service is not configured.') }
     return supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: import.meta.env.VITE_AUTH_REDIRECT_URL || undefined,
+      redirectTo: resolveAuthRedirectUrl(),
     })
   }
 

@@ -1489,7 +1489,13 @@ export default function ProfilePage() {
             <p className="mt-2 max-w-2xl text-sm text-muted">{user.bio}</p>
             <div className="mt-2 flex flex-wrap gap-2 text-sm">
               <span className="pill">{user.country}</span>
-              <span className={verificationTier === 'none' ? 'rounded-full bg-line px-2.5 py-1 text-xs font-semibold text-muted' : 'pill'}>
+              <span
+                className={
+                  verificationTier === 'none'
+                    ? 'rounded-full bg-line px-2.5 py-1 text-xs font-semibold text-muted'
+                    : 'rounded-full bg-[#fff7da] px-2.5 py-1 text-xs font-semibold text-[#8a6a00] ring-1 ring-[#e0c15a]'
+                }
+              >
                 {verificationLabel}
               </span>
             </div>

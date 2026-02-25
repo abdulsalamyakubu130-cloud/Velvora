@@ -14,6 +14,7 @@ function buildFallbackBody(notification) {
   if (notification.type === 'follow') return 'Someone followed your profile.'
   if (notification.type === 'comment') return 'Someone commented on your listing.'
   if (notification.type === 'like') return 'Someone liked your listing.'
+  if (notification.type === 'post') return 'Someone you follow posted a new listing.'
   if (notification.type === 'mention') return 'You have a verification update.'
   return 'You have a new notification.'
 }

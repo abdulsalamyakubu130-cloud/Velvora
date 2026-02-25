@@ -4,8 +4,8 @@ export default function VerifiedBadge({ tier = 'none', className = '', showLabel
   const label = tier === 'enhanced' ? 'Verified Pro' : 'Verified'
   const toneClass =
     tier === 'enhanced'
-      ? 'bg-accent text-white ring-1 ring-accent/30'
-      : 'bg-accentSoft text-accentStrong ring-1 ring-accent/20'
+      ? 'bg-[#b8860b] text-[#fff8e1] ring-1 ring-[#d4af37]'
+      : 'bg-[#fff7da] text-[#8a6a00] ring-1 ring-[#e0c15a]'
 
   return (
     <span

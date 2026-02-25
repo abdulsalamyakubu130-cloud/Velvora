@@ -13,6 +13,22 @@
   --accent: #237b4b;
   --accent-strong: #165737;
   --accent-soft: #e6f5eb;
+  --overlay-panel: rgba(255, 255, 255, 0.95);
+  --chat-canvas: #eef1f5;
+}
+
+[data-theme='dark'] {
+  --canvas: #0b1310;
+  --panel: #111c18;
+  --ink: #e4f0e9;
+  --muted: #9ab3a7;
+  --line: #24362f;
+  --accent: #3daa74;
+  --accent-strong: #2f8b5e;
+  --accent-soft: #1a2a23;
+  --overlay-panel: rgba(16, 27, 22, 0.94);
+  --chat-canvas: #0f1815;
+  color-scheme: dark;
 }
 
 * {
@@ -23,7 +39,8 @@ html,
 body {
   min-height: 100%;
   width: 100%;
-  overflow-x: clip;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -31,11 +48,36 @@ body {
   font-family: var(--font-body);
   color: var(--ink);
   background: var(--canvas);
+  -webkit-text-size-adjust: 100%;
+  overflow-x: hidden;
+  transition: background-color 200ms ease, color 200ms ease;
 }
 
 #root {
   width: 100%;
-  overflow-x: clip;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+img,
+video {
+  max-width: 100%;
+  height: auto;
+}
+
+@media (max-width: 768px) {
+  .input,
+  input.input,
+  textarea.input,
+  select.input {
+    font-size: 16px !important;
+  }
+
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
 }
 
 .ambient-bg {
@@ -49,6 +91,38 @@ body {
     var(--canvas);
 }
 
+[data-theme='dark'] .ambient-bg {
+  background:
+    radial-gradient(circle at 0% 0%, rgba(73, 185, 127, 0.14), transparent 36%),
+    radial-gradient(circle at 100% 0%, rgba(48, 156, 104, 0.1), transparent 38%),
+    radial-gradient(circle at 50% 100%, rgba(36, 109, 75, 0.1), transparent 44%),
+    var(--canvas);
+}
+
+[data-theme='dark'] .bg-white {
+  background-color: var(--panel) !important;
+}
+
+[data-theme='dark'] .bg-white\/95 {
+  background-color: var(--overlay-panel) !important;
+}
+
+[data-theme='dark'] .bg-white\/92 {
+  background-color: rgba(16, 27, 22, 0.92) !important;
+}
+
+[data-theme='dark'] .bg-white\/90 {
+  background-color: rgba(16, 27, 22, 0.9) !important;
+}
+
+[data-theme='dark'] .bg-\[\#eef1f5\] {
+  background-color: var(--chat-canvas) !important;
+}
+
+[data-theme='dark'] .bg-\[\#f2f4f7\] {
+  background-color: rgba(23, 35, 29, 0.88) !important;
+}
+
 @layer components {
   .surface {
     @apply rounded-2xl border border-line bg-panel shadow-soft;
@@ -59,11 +133,11 @@ body {
   }
 
   .btn-muted {
-    @apply inline-flex items-center justify-center rounded-full border border-line bg-white px-4 py-2 text-sm font-semibold text-ink transition hover:border-accent hover:text-accent;
+    @apply inline-flex items-center justify-center rounded-full border border-line bg-panel px-4 py-2 text-sm font-semibold text-ink transition hover:border-accent hover:text-accent;
   }
 
   .input {
-    @apply w-full rounded-xl border border-line bg-white px-3 py-2 text-sm text-ink outline-none transition focus:border-accent focus:ring-2 focus:ring-accent;
+    @apply w-full rounded-xl border border-line bg-panel px-3 py-2 text-sm text-ink outline-none transition focus:border-accent focus:ring-2 focus:ring-accent;
   }
 
   .pill {

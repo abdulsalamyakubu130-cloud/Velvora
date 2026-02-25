@@ -4,7 +4,7 @@ import { buildProfilePath, formatMoneyForViewer, normalizeVerificationTier, reso
 import { getSupabaseBrowserClient, isSupabaseConfigured } from '@/lib/supabase/client'
 import { runWithMissingColumnFallback } from '@/lib/supabase/query-compat'
 import { getProfilePictureValue, resolveProfilePictureUrl } from '@/lib/utils/media-url'
-import { isLocalLiked, setLocalLike } from '@/lib/utils/social-cache'
+import { isLocalLiked, isLocalSavedPost, setLocalLike, setLocalSavedPost } from '@/lib/utils/social-cache'
 import { useAuth } from '@/src/context/auth-context'
 import { useI18n } from '@/src/context/i18n-context'
 import VerifiedBadge from '@/components/verified-badge'
@@ -50,6 +50,9 @@ export default function PostCard({ post, compact = false }) {
   const location = useLocation()
   const [isLiked, setIsLiked] = useState(() =>
     authUser?.id ? Boolean(post.is_liked_by_me) || isLocalLiked(authUser.id, post.id) : false,
+  )
+  const [isSaved, setIsSaved] = useState(() =>
+    authUser?.id ? isLocalSavedPost(authUser.id, post.id) : false,
   )
   const [likesCount, setLikesCount] = useState(post.likes_count)
   const [likePending, setLikePending] = useState(false)
@@ -98,9 +101,11 @@ export default function PostCard({ post, compact = false }) {
     setIsFollowing(Boolean(post.user.is_following))
     if (!authUser?.id) {
       setIsLiked(false)
+      setIsSaved(false)
       return
     }
     setIsLiked(Boolean(post.is_liked_by_me) || isLocalLiked(authUser.id, post.id))
+    setIsSaved(isLocalSavedPost(authUser.id, post.id))
   }, [authUser?.id, post.comments_count, post.id, post.is_liked_by_me, post.likes_count, post.user.is_following])
 
   useEffect(() => {
@@ -332,6 +337,21 @@ export default function PostCard({ post, compact = false }) {
     setLikePending(false)
   }
 
+  function handleSaveToggle() {
+    if (!authUser?.id) {
+      setEngagementFeedback('Sign in to save posts.')
+      navigate('/auth', { state: { from: authRedirectTarget } })
+      return
+    }
+
+    if (!post?.id) return
+
+    const nextIsSaved = !isSaved
+    setIsSaved(nextIsSaved)
+    setLocalSavedPost(authUser.id, post.id, nextIsSaved)
+    setEngagementFeedback(nextIsSaved ? 'Post saved.' : 'Post removed from saved.')
+  }
+
   async function handleCommentSubmit(event) {
     event.preventDefault()
     if (commentPending) return
@@ -474,11 +494,11 @@ export default function PostCard({ post, compact = false }) {
   }
 
   return (
-    <article className="surface overflow-hidden animate-rise">
+    <article className={`surface overflow-hidden animate-rise ${compact ? '' : 'mx-auto w-full max-w-3xl'}`}>
       <img
         src={imageSrc}
         alt={post.title}
-        className={`w-full object-cover ${compact ? 'h-52' : 'h-72 md:h-[24rem]'}`}
+        className={`w-full object-cover ${compact ? 'h-44 sm:h-48' : 'h-64 md:h-80'}`}
         onError={() => {
           const alternateImage = (post.images || []).find((candidate) => candidate && candidate !== imageSrc)
           if (alternateImage) {
@@ -491,7 +511,7 @@ export default function PostCard({ post, compact = false }) {
         }}
       />
 
-      <div className="space-y-3 p-4">
+      <div className="space-y-2.5 p-3.5">
         <div className="flex items-start justify-between gap-3">
           <div>
             <h3 className="text-base font-semibold text-ink">{post.title}</h3>
@@ -499,12 +519,34 @@ export default function PostCard({ post, compact = false }) {
               {post.location} | {timeAgo(post.created_at)}
             </p>
           </div>
-          <p className="text-base font-semibold text-accentStrong">
-            {hasPrice ? formatMoneyForViewer(post.price, viewerLocation, post.location) : 'Price on request'}
-          </p>
+          <div className="flex items-start gap-2">
+            <p className="text-sm font-semibold text-accentStrong sm:text-base">
+              {hasPrice ? formatMoneyForViewer(post.price, viewerLocation, post.location) : 'Price on request'}
+            </p>
+            <button
+              type="button"
+              onClick={handleSaveToggle}
+              className={`inline-flex h-8 w-8 items-center justify-center rounded-full border transition ${
+                isSaved
+                  ? 'border-accent bg-accent text-white'
+                  : 'border-line bg-white text-muted hover:border-accent hover:text-accent'
+              }`}
+              aria-label={isSaved ? t('post.saved', {}, 'Saved') : t('post.save', {}, 'Save')}
+              title={isSaved ? t('post.saved', {}, 'Saved') : t('post.save', {}, 'Save')}
+            >
+              <svg viewBox="0 0 20 20" fill={isSaved ? 'currentColor' : 'none'} aria-hidden="true" className="h-4 w-4">
+                <path
+                  d="M6 3.5h8a1.3 1.3 0 0 1 1.3 1.3v11l-5.3-3-5.3 3v-11A1.3 1.3 0 0 1 6 3.5z"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          </div>
         </div>
 
-        {!compact ? <p className="text-sm text-muted">{post.description}</p> : null}
+        {!compact ? <p className="text-[13px] text-muted">{post.description}</p> : null}
 
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="pill">{post.condition.toUpperCase()}</span>
@@ -513,12 +555,12 @@ export default function PostCard({ post, compact = false }) {
           {!post.is_available ? <span className="pill">{t('post.sold')}</span> : null}
         </div>
 
-        <div className="flex flex-col gap-3 border-t border-line pt-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-2.5 border-t border-line pt-2.5 sm:flex-row sm:items-center sm:justify-between">
           <Link to={authorProfileHref} className="flex min-w-0 items-center gap-2">
             <img
               src={resolveProfilePictureUrl(getProfilePictureValue(post.user))}
               alt={post.user.full_name}
-              className="h-8 w-8 rounded-lg object-cover"
+              className="h-7 w-7 rounded-lg object-cover"
               onError={(event) => {
                 event.currentTarget.src = '/placeholders/avatar-anya.svg'
               }}

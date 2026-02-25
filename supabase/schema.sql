@@ -11,8 +11,24 @@ end $$;
 do $$
 begin
   if not exists (select 1 from pg_type where typname = 'notification_type') then
-    create type public.notification_type as enum ('like', 'comment', 'follow', 'message', 'mention');
+    create type public.notification_type as enum ('like', 'comment', 'follow', 'message', 'mention', 'post');
   end if;
+end $$;
+
+do $$
+begin
+  if exists (select 1 from pg_type where typname = 'notification_type')
+     and not exists (
+       select 1
+       from pg_enum e
+       join pg_type t on t.oid = e.enumtypid
+       where t.typname = 'notification_type'
+         and e.enumlabel = 'post'
+     ) then
+    alter type public.notification_type add value 'post';
+  end if;
+exception
+  when duplicate_object then null;
 end $$;
 
 do $$
@@ -169,6 +185,23 @@ create table if not exists public.kyc_verifications (
   unique (user_id, tier_requested)
 );
 
+create table if not exists public.support_requests (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.users(id) on delete cascade,
+  category text not null default 'general' check (category in ('general', 'account', 'payments', 'orders', 'technical', 'safety')),
+  subject text not null check (char_length(trim(subject)) between 5 and 120),
+  message text not null check (char_length(trim(message)) between 20 and 4000),
+  status text not null default 'open' check (status in ('open', 'in_progress', 'resolved', 'closed')),
+  admin_note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.support_admin_allowlist (
+  email citext primary key,
+  created_at timestamptz not null default now()
+);
+
 create index if not exists posts_user_id_idx on public.posts(user_id);
 create index if not exists posts_created_at_idx on public.posts(created_at desc);
 create index if not exists likes_post_id_idx on public.likes(post_id);
@@ -178,6 +211,61 @@ create index if not exists notifications_user_id_idx on public.notifications(use
 create index if not exists reports_created_at_idx on public.reports(created_at desc);
 create index if not exists kyc_verifications_user_id_idx on public.kyc_verifications(user_id);
 create index if not exists kyc_verifications_status_idx on public.kyc_verifications(status, created_at desc);
+create index if not exists support_requests_user_id_idx on public.support_requests(user_id);
+create index if not exists support_requests_status_idx on public.support_requests(status, created_at desc);
+
+create or replace function public.touch_support_request_updated_at()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  new.updated_at := now();
+  return new;
+end;
+$$;
+
+drop trigger if exists before_support_request_update_touch on public.support_requests;
+create trigger before_support_request_update_touch
+before update on public.support_requests
+for each row execute procedure public.touch_support_request_updated_at();
+
+create or replace function public.is_support_admin()
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  claim_email text := lower(trim(coalesce(auth.jwt() ->> 'email', '')));
+  profile_email text := '';
+  effective_email text := '';
+begin
+  select lower(trim(coalesce(u.email::text, '')))
+  into profile_email
+  from public.users u
+  where u.id = auth.uid();
+
+  effective_email := coalesce(nullif(claim_email, ''), nullif(profile_email, ''), '');
+
+  return (
+    (auth.jwt() ->> 'role') = 'admin'
+    or (auth.jwt() -> 'app_metadata' ->> 'role') = 'admin'
+    or (auth.jwt() -> 'user_metadata' ->> 'role') = 'admin'
+    or effective_email = 'velvora278@gmail.com'
+    or (
+      effective_email <> ''
+      and exists (
+        select 1
+        from public.support_admin_allowlist allowlist
+        where lower(trim(allowlist.email::text)) = effective_email
+      )
+    )
+  );
+end;
+$$;
+
+grant execute on function public.is_support_admin() to anon, authenticated;
 
 create or replace function public.enforce_unverified_post_limit()
 returns trigger
@@ -296,6 +384,8 @@ alter table public.notifications enable row level security;
 alter table public.reports enable row level security;
 alter table public.blocked_users enable row level security;
 alter table public.kyc_verifications enable row level security;
+alter table public.support_requests enable row level security;
+alter table public.support_admin_allowlist enable row level security;
 
 drop policy if exists users_read_all on public.users;
 create policy users_read_all on public.users
@@ -448,6 +538,18 @@ with check (
   )
 );
 
+drop policy if exists messages_sender_delete on public.messages;
+create policy messages_sender_delete on public.messages
+for delete
+using (
+  sender_id = auth.uid()
+  and exists (
+    select 1 from public.conversations c
+    where c.id = messages.conversation_id
+      and auth.uid() in (c.user_one, c.user_two)
+  )
+);
+
 drop policy if exists notifications_read_own on public.notifications;
 create policy notifications_read_own on public.notifications
 for select using (auth.uid() = user_id);
@@ -511,3 +613,30 @@ with check ((auth.jwt() ->> 'role') = 'admin');
 drop policy if exists kyc_admin_read on public.kyc_verifications;
 create policy kyc_admin_read on public.kyc_verifications
 for select using ((auth.jwt() ->> 'role') = 'admin');
+
+drop policy if exists support_admin_allowlist_read_admin on public.support_admin_allowlist;
+create policy support_admin_allowlist_read_admin on public.support_admin_allowlist
+for select using (public.is_support_admin());
+
+drop policy if exists support_admin_allowlist_write_admin on public.support_admin_allowlist;
+create policy support_admin_allowlist_write_admin on public.support_admin_allowlist
+for all
+using (public.is_support_admin())
+with check (public.is_support_admin());
+
+drop policy if exists support_requests_select_own_or_admin on public.support_requests;
+create policy support_requests_select_own_or_admin on public.support_requests
+for select using (
+  auth.uid() = user_id
+  or public.is_support_admin()
+);
+
+drop policy if exists support_requests_insert_own on public.support_requests;
+create policy support_requests_insert_own on public.support_requests
+for insert with check (auth.uid() = user_id and status = 'open');
+
+drop policy if exists support_requests_update_admin on public.support_requests;
+create policy support_requests_update_admin on public.support_requests
+for update
+using (public.is_support_admin())
+with check (public.is_support_admin());

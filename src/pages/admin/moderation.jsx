@@ -193,17 +193,17 @@ export default function ModerationPage() {
         if (pendingKycResult.error) loadWarnings.push('Could not load pending KYC queue.')
         if (blockedUsersResult.error) loadWarnings.push('Could not load blocked actions count.')
 
-        const missingPendingProfileIds = [...new Set(
+        const missingProfileIds = [...new Set(
           pendingRows
             .map((request) => request.user_id)
             .filter((id) => Boolean(id) && !usersById.has(id)),
         )]
 
-        if (missingPendingProfileIds.length) {
+        if (missingProfileIds.length) {
           const missingProfilesResult = await supabase
             .from('users')
             .select('id, username, full_name, email, country, is_verified, verification_tier')
-            .in('id', missingPendingProfileIds)
+            .in('id', missingProfileIds)
 
           if (missingProfilesResult.error) {
             loadWarnings.push('Could not load profile details for some KYC requests.')

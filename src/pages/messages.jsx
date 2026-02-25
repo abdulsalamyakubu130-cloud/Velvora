@@ -14,6 +14,15 @@ function buildLastMessagePreview(message) {
   return 'No messages yet.'
 }
 
+function formatMessageTime(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date)
+}
+
 function isMissingTableError(error, tableName) {
   const message = String(error?.message || '').toLowerCase()
   return (
@@ -32,6 +41,7 @@ function isMissingFunctionError(error, functionName) {
 export default function MessagesPage() {
   const location = useLocation()
   const { user: authUser } = useAuth()
+  const [showMobileThread, setShowMobileThread] = useState(false)
   const [conversations, setConversations] = useState([])
   const [loadingConversations, setLoadingConversations] = useState(false)
   const [activeConversationId, setActiveConversationId] = useState('')
@@ -44,9 +54,15 @@ export default function MessagesPage() {
   const [partnerTyping, setPartnerTyping] = useState(false)
   const [partnerOnline, setPartnerOnline] = useState(false)
   const [sending, setSending] = useState(false)
+  const [deletingMessageId, setDeletingMessageId] = useState('')
+  const [deletingConversation, setDeletingConversation] = useState(false)
   const [requestActionPending, setRequestActionPending] = useState(false)
+  const [openedConversationNonce, setOpenedConversationNonce] = useState(0)
   const typingTimeoutRef = useRef(null)
+  const partnerTypingTimeoutRef = useRef(null)
+  const openedConversationsRef = useRef(new Set())
   const channelRef = useRef(null)
+  const messagesViewportRef = useRef(null)
 
   resolveViewerLocation(authUser)
   const currentUserId = String(authUser?.id || '')
@@ -73,14 +89,51 @@ export default function MessagesPage() {
           : 'Waiting for request acceptance'
         : 'Type a message...'
 
-  const loadConversations = useCallback(async () => {
-    setLoadingConversations(true)
-    setStatusMessage('')
+  const refreshUnreadMessageBadge = useCallback(() => {
+    if (typeof window === 'undefined') return
+    window.dispatchEvent(new Event('velvora:refresh-unread-messages'))
+  }, [])
+
+  const markConversationNotificationsRead = useCallback(async (conversationId) => {
+    if (!conversationId || !currentUserId || !isSupabaseConfigured) return
+
+    const supabase = getSupabaseBrowserClient()
+    if (!supabase) return
+
+    await supabase
+      .from('notifications')
+      .update({ is_read: true })
+      .eq('user_id', currentUserId)
+      .eq('type', 'message')
+      .eq('reference_id', conversationId)
+      .eq('is_read', false)
+  }, [currentUserId])
+
+  function markConversationOpened(conversationId) {
+    if (!conversationId) return
+    openedConversationsRef.current.add(String(conversationId))
+    setOpenedConversationNonce((currentValue) => currentValue + 1)
+  }
+
+  function activateConversation(conversationId, options = {}) {
+    const { opened = false } = options
+    if (!conversationId) return
+    setActiveConversationId(conversationId)
+    if (opened) {
+      markConversationOpened(conversationId)
+    }
+    setShowMobileThread(true)
+  }
+
+  const loadConversations = useCallback(async (options = {}) => {
+    const { silent = false } = options
+    if (!silent) setLoadingConversations(true)
+    if (!silent) setStatusMessage('')
 
     if (!currentUserId) {
       setConversations([])
       setActiveConversationId('')
-      setLoadingConversations(false)
+      if (!silent) setLoadingConversations(false)
       setStatusMessage('Sign in to view your conversations.')
       return
     }
@@ -88,7 +141,7 @@ export default function MessagesPage() {
     if (!isSupabaseConfigured) {
       setConversations([])
       setActiveConversationId('')
-      setLoadingConversations(false)
+      if (!silent) setLoadingConversations(false)
       setStatusMessage('Supabase is not configured for chat.')
       return
     }
@@ -97,7 +150,7 @@ export default function MessagesPage() {
     if (!supabase) {
       setConversations([])
       setActiveConversationId('')
-      setLoadingConversations(false)
+      if (!silent) setLoadingConversations(false)
       setStatusMessage('Unable to connect to Supabase right now.')
       return
     }
@@ -112,7 +165,7 @@ export default function MessagesPage() {
     if (conversationError) {
       setConversations([])
       setActiveConversationId('')
-      setLoadingConversations(false)
+      if (!silent) setLoadingConversations(false)
       setStatusMessage(conversationError.message || 'Failed to load conversations.')
       return
     }
@@ -121,7 +174,7 @@ export default function MessagesPage() {
     if (!rawConversations.length) {
       setConversations([])
       setActiveConversationId('')
-      setLoadingConversations(false)
+      if (!silent) setLoadingConversations(false)
       setStatusMessage('No conversations yet.')
       return
     }
@@ -135,7 +188,7 @@ export default function MessagesPage() {
     )
     const conversationIds = rawConversations.map((conversation) => conversation.id)
 
-    const [usersResult, latestMessagesResult, requestRowsResult] = await Promise.all([
+    const [usersResult, latestMessagesResult, requestRowsResult, unreadRowsResult] = await Promise.all([
       partnerIds.length
         ? runWithMissingColumnFallback(
             () =>
@@ -164,6 +217,14 @@ export default function MessagesPage() {
             .select('conversation_id, status, requester_id, target_user_id, updated_at')
             .in('conversation_id', conversationIds)
         : Promise.resolve({ data: [], error: null }),
+      conversationIds.length
+        ? supabase
+            .from('messages')
+            .select('conversation_id')
+            .in('conversation_id', conversationIds)
+            .eq('is_seen', false)
+            .neq('sender_id', currentUserId)
+        : Promise.resolve({ data: [], error: null }),
     ])
 
     if (requestRowsResult.error && !isMissingTableError(requestRowsResult.error, 'message_requests')) {
@@ -174,10 +235,15 @@ export default function MessagesPage() {
 
     const usersById = new Map((usersResult.data || []).map((row) => [row.id, row]))
     const latestMessageByConversationId = new Map()
+    const unreadCountByConversationId = new Map()
     for (const row of latestMessagesResult.data || []) {
       if (!latestMessageByConversationId.has(row.conversation_id)) {
         latestMessageByConversationId.set(row.conversation_id, row)
       }
+    }
+    for (const row of unreadRowsResult.data || []) {
+      const currentCount = unreadCountByConversationId.get(row.conversation_id) || 0
+      unreadCountByConversationId.set(row.conversation_id, currentCount + 1)
     }
 
     const mappedConversations = rawConversations
@@ -202,6 +268,7 @@ export default function MessagesPage() {
           partner_avatar: resolveProfilePictureUrl(getProfilePictureValue(partnerRow)),
           last_message: requestPendingNoMessage ? 'Message request pending' : buildLastMessagePreview(latestMessage),
           last_message_at: lastMessageAt,
+          unread_count: unreadCountByConversationId.get(conversation.id) || 0,
           request_status: requestStatus,
           requester_id: request?.requester_id || '',
           target_user_id: request?.target_user_id || '',
@@ -217,10 +284,10 @@ export default function MessagesPage() {
       if (currentId && mappedConversations.some((conversation) => conversation.id === currentId)) {
         return currentId
       }
-      return mappedConversations[0]?.id || ''
+      return ''
     })
-    setStatusMessage(mappedConversations.length ? '' : 'No conversations yet.')
-    setLoadingConversations(false)
+    if (!silent) setStatusMessage(mappedConversations.length ? '' : 'No conversations yet.')
+    if (!silent) setLoadingConversations(false)
   }, [currentUserId])
 
   const ensureConversationForRequestedUser = useCallback(async () => {
@@ -248,7 +315,7 @@ export default function MessagesPage() {
     const existingConversationId = existingRows?.[0]?.id
     if (existingConversationId) {
       await loadConversations()
-      setActiveConversationId(existingConversationId)
+      activateConversation(existingConversationId, { opened: true })
       return
     }
 
@@ -276,7 +343,7 @@ export default function MessagesPage() {
 
       if (createError || !createdConversation?.id) return
       await loadConversations()
-      setActiveConversationId(createdConversation.id)
+      activateConversation(createdConversation.id, { opened: true })
       return
     }
 
@@ -284,11 +351,12 @@ export default function MessagesPage() {
     if (!requestRow?.conversation_id) return
 
     await loadConversations()
-    setActiveConversationId(requestRow.conversation_id)
+    activateConversation(requestRow.conversation_id, { opened: true })
   }, [currentUserId, loadConversations, requestedUsername])
 
-  const loadMessages = useCallback(async () => {
-    setComposerFeedback('')
+  const loadMessages = useCallback(async (options = {}) => {
+    const { silent = false } = options
+    if (!silent) setComposerFeedback('')
 
     if (!activeConversationId) {
       setMessages([])
@@ -297,29 +365,29 @@ export default function MessagesPage() {
 
     if (!isSupabaseConfigured) {
       setMessages([])
-      setComposerFeedback('Supabase is not configured for chat.')
+      if (!silent) setComposerFeedback('Supabase is not configured for chat.')
       return
     }
 
     const supabase = getSupabaseBrowserClient()
     if (!supabase) {
       setMessages([])
-      setComposerFeedback('Unable to connect to Supabase right now.')
+      if (!silent) setComposerFeedback('Unable to connect to Supabase right now.')
       return
     }
 
-    setLoadingMessages(true)
+    if (!silent) setLoadingMessages(true)
     const { data, error } = await supabase
       .from('messages')
       .select('id, conversation_id, sender_id, content, image_url, created_at, is_seen')
       .eq('conversation_id', activeConversationId)
       .order('created_at', { ascending: true })
       .limit(200)
-    setLoadingMessages(false)
+    if (!silent) setLoadingMessages(false)
 
     if (error) {
       setMessages([])
-      setComposerFeedback(error.message || 'Failed to load messages.')
+      if (!silent) setComposerFeedback(error.message || 'Failed to load messages.')
       return
     }
 
@@ -377,6 +445,16 @@ export default function MessagesPage() {
         { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${currentUserId}` },
         loadConversations,
       )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        () => loadConversations({ silent: true }),
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'messages' },
+        () => loadConversations({ silent: true }),
+      )
       .subscribe()
 
     return () => {
@@ -393,13 +471,33 @@ export default function MessagesPage() {
   }, [activeConversationId, loadMessages])
 
   useEffect(() => {
+    if (!currentUserId || !isSupabaseConfigured) return undefined
+
+    const refreshInterval = setInterval(() => {
+      loadConversations({ silent: true })
+      if (activeConversationId) {
+        loadMessages({ silent: true })
+      }
+    }, 6000)
+
+    return () => {
+      clearInterval(refreshInterval)
+    }
+  }, [activeConversationId, currentUserId, loadConversations, loadMessages])
+
+  useEffect(() => {
     if (!isSupabaseConfigured || !activeConversationId || !currentUserId) return undefined
     const supabase = getSupabaseBrowserClient()
     if (!supabase) return undefined
 
     const partnerId = String(activeConversation?.partner_id || '')
     const channel = supabase
-      .channel(`conversation:${activeConversationId}`, { config: { presence: { key: currentUserId } } })
+      .channel(`conversation:${activeConversationId}`, {
+        config: {
+          presence: { key: currentUserId },
+          broadcast: { ack: true, self: false },
+        },
+      })
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${activeConversationId}` },
@@ -419,6 +517,7 @@ export default function MessagesPage() {
             }
             return [...currentMessages, nextMessage]
           })
+          loadConversations({ silent: true })
         },
       )
       .on(
@@ -445,10 +544,22 @@ export default function MessagesPage() {
         { event: '*', schema: 'public', table: 'message_requests', filter: `conversation_id=eq.${activeConversationId}` },
         loadConversations,
       )
-      .on('broadcast', { event: 'typing' }, ({ payload }) => {
-        const senderId = String(payload?.sender_id || '')
-        if (senderId && senderId !== currentUserId) {
-          setPartnerTyping(Boolean(payload?.is_typing))
+      .on('broadcast', { event: 'typing' }, (eventPayload) => {
+        const payload = eventPayload?.payload || eventPayload || {}
+        const senderId = String(payload.sender_id || '')
+        const conversationId = String(payload.conversation_id || '')
+        if (!senderId || senderId === currentUserId || conversationId !== String(activeConversationId)) return
+
+        const isTyping = Boolean(payload.is_typing)
+        setPartnerTyping(isTyping)
+
+        if (partnerTypingTimeoutRef.current) {
+          clearTimeout(partnerTypingTimeoutRef.current)
+        }
+        if (isTyping) {
+          partnerTypingTimeoutRef.current = setTimeout(() => {
+            setPartnerTyping(false)
+          }, 2200)
         }
       })
       .on('presence', { event: 'sync' }, () => {
@@ -472,6 +583,9 @@ export default function MessagesPage() {
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current)
       }
+      if (partnerTypingTimeoutRef.current) {
+        clearTimeout(partnerTypingTimeoutRef.current)
+      }
       setPartnerTyping(false)
       setPartnerOnline(false)
       channelRef.current = null
@@ -480,21 +594,23 @@ export default function MessagesPage() {
   }, [activeConversation?.partner_id, activeConversation?.partner_name, activeConversationId, currentUserId, loadConversations])
 
   useEffect(() => {
-    if (!messages.length || !activeConversationId) return
+    if (!activeConversationId || !currentUserId) return
+    if (!openedConversationsRef.current.has(String(activeConversationId))) return
+    if (typeof document !== 'undefined' && (document.visibilityState !== 'visible' || !document.hasFocus())) return
+    const isDesktopViewport = typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches
+    if (!isDesktopViewport && !showMobileThread) return
 
+    refreshUnreadMessageBadge()
+    void markConversationNotificationsRead(activeConversationId)
+
+    if (!messages.length || !isSupabaseConfigured) return
     const unseenIncoming = messages.filter(
       (message) => String(message.sender_id || '') !== currentUserId && !message.is_seen,
     )
-    if (!unseenIncoming.length || !isSupabaseConfigured) return
+    if (!unseenIncoming.length) return
 
     const supabase = getSupabaseBrowserClient()
     if (!supabase) return
-
-    const persistedIds = unseenIncoming
-      .map((message) => message.id)
-      .filter((messageId) => !String(messageId).startsWith('local-'))
-
-    if (!persistedIds.length) return
 
     setMessages((currentMessages) =>
       currentMessages.map((message) =>
@@ -504,18 +620,47 @@ export default function MessagesPage() {
       ),
     )
 
+    setConversations((currentConversations) =>
+      currentConversations.map((conversation) =>
+        conversation.id === activeConversationId
+          ? { ...conversation, unread_count: 0 }
+          : conversation,
+      ),
+    )
+
     supabase
       .from('messages')
       .update({ is_seen: true })
-      .in('id', persistedIds)
+      .neq('sender_id', currentUserId)
+      .eq('is_seen', false)
       .eq('conversation_id', activeConversationId)
-  }, [activeConversationId, currentUserId, messages])
+      .then(() => {
+        refreshUnreadMessageBadge()
+        void markConversationNotificationsRead(activeConversationId)
+        loadConversations({ silent: true })
+      })
+  }, [
+    activeConversationId,
+    currentUserId,
+    loadConversations,
+    markConversationNotificationsRead,
+    messages,
+    openedConversationNonce,
+    refreshUnreadMessageBadge,
+    showMobileThread,
+  ])
+
+  useEffect(() => {
+    const viewport = messagesViewportRef.current
+    if (!viewport) return
+    viewport.scrollTop = viewport.scrollHeight
+  }, [activeConversationId, messages])
 
   function broadcastTyping(isTyping) {
     const channel = channelRef.current
-    if (!channel || !activeConversationId) return
+    if (!channel || !activeConversationId || !currentUserId) return
 
-    channel.send({
+    void channel.send({
       type: 'broadcast',
       event: 'typing',
       payload: {
@@ -531,6 +676,7 @@ export default function MessagesPage() {
     setDraft(nextDraft)
 
     if (!canMessage) return
+    markConversationOpened(activeConversationId)
     broadcastTyping(true)
 
     if (typingTimeoutRef.current) {
@@ -617,6 +763,133 @@ export default function MessagesPage() {
     setComposerFeedback(nextStatus === 'accepted' ? 'Message request accepted.' : 'Message request declined.')
   }
 
+  async function handleDeleteMessage(messageId) {
+    const normalizedMessageId = String(messageId || '')
+    if (!normalizedMessageId || !currentUserId) return
+
+    const messageRow = messages.find((message) => String(message.id) === normalizedMessageId)
+    if (!messageRow) return
+    if (String(messageRow.sender_id || '') !== currentUserId) {
+      setComposerFeedback('You can only delete your own messages.')
+      return
+    }
+
+    if (typeof window !== 'undefined') {
+      const shouldDelete = window.confirm('Delete this message?')
+      if (!shouldDelete) return
+    }
+
+    if (normalizedMessageId.startsWith('local-')) {
+      setMessages((currentMessages) =>
+        currentMessages.filter((message) => String(message.id) !== normalizedMessageId),
+      )
+      return
+    }
+
+    if (!isSupabaseConfigured) {
+      setComposerFeedback('Message deletion requires Supabase configuration.')
+      return
+    }
+
+    const supabase = getSupabaseBrowserClient()
+    if (!supabase) {
+      setComposerFeedback('Unable to connect to Supabase right now.')
+      return
+    }
+
+    setDeletingMessageId(normalizedMessageId)
+    setComposerFeedback('')
+
+    const { error: hardDeleteError } = await supabase
+      .from('messages')
+      .delete()
+      .eq('id', normalizedMessageId)
+      .eq('sender_id', currentUserId)
+
+    if (!hardDeleteError) {
+      setMessages((currentMessages) =>
+        currentMessages.filter((message) => String(message.id) !== normalizedMessageId),
+      )
+      setDeletingMessageId('')
+      await loadConversations({ silent: true })
+      refreshUnreadMessageBadge()
+      return
+    }
+
+    const { error: softDeleteError } = await supabase
+      .from('messages')
+      .update({ content: 'Message deleted', image_url: null })
+      .eq('id', normalizedMessageId)
+      .eq('sender_id', currentUserId)
+
+    setDeletingMessageId('')
+
+    if (softDeleteError) {
+      setComposerFeedback(hardDeleteError.message || softDeleteError.message || 'Failed to delete message.')
+      return
+    }
+
+    setMessages((currentMessages) =>
+      currentMessages.map((message) =>
+        String(message.id) === normalizedMessageId
+          ? { ...message, content: 'Message deleted', image_url: null }
+          : message,
+      ),
+    )
+    await loadConversations({ silent: true })
+  }
+
+  async function handleDeleteConversation() {
+    if (!activeConversationId || !currentUserId || deletingConversation) return
+
+    if (typeof window !== 'undefined') {
+      const shouldDelete = window.confirm('Delete this entire chat? This action cannot be undone.')
+      if (!shouldDelete) return
+    }
+
+    if (!isSupabaseConfigured) {
+      setComposerFeedback('Chat deletion requires Supabase configuration.')
+      return
+    }
+
+    const supabase = getSupabaseBrowserClient()
+    if (!supabase) {
+      setComposerFeedback('Unable to connect to Supabase right now.')
+      return
+    }
+
+    const conversationId = String(activeConversationId)
+    setDeletingConversation(true)
+    setComposerFeedback('')
+
+    const { error } = await supabase
+      .from('conversations')
+      .delete()
+      .eq('id', conversationId)
+
+    setDeletingConversation(false)
+
+    if (error) {
+      setComposerFeedback(error.message || 'Failed to delete this chat.')
+      return
+    }
+
+    openedConversationsRef.current.delete(conversationId)
+    setConversations((currentConversations) =>
+      currentConversations.filter((conversation) => conversation.id !== conversationId),
+    )
+    setMessages([])
+    setDraft('')
+    setAttachment(null)
+    setActiveConversationId('')
+    setShowMobileThread(false)
+    setPartnerTyping(false)
+    setPartnerOnline(false)
+    setStatusMessage('Conversation deleted.')
+    refreshUnreadMessageBadge()
+    await markConversationNotificationsRead(conversationId)
+  }
+
   async function handleSend(event) {
     event.preventDefault()
     const trimmedDraft = draft.trim()
@@ -632,6 +905,7 @@ export default function MessagesPage() {
       )
       return
     }
+    markConversationOpened(activeConversationId)
 
     if (!isSupabaseConfigured) {
       setComposerFeedback('Supabase is not configured for chat.')
@@ -726,51 +1000,59 @@ export default function MessagesPage() {
   }
 
   return (
-    <div className="grid gap-5 lg:grid-cols-[320px,minmax(0,1fr)]">
-      <aside className="surface p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <h1 className="font-brand text-xl font-semibold">Messages</h1>
-        </div>
+    <div className="grid gap-2.5 lg:grid-cols-[260px,minmax(0,1fr)] xl:grid-cols-[280px,minmax(0,1fr)]">
+      <aside className={`surface overflow-hidden p-0 ${showMobileThread ? 'hidden lg:block' : 'block'}`}>
+        <header className="border-b border-line bg-white px-3 py-2">
+          <h1 className="font-brand text-lg font-semibold text-ink">Messages</h1>
+          <p className="text-xs text-muted">{conversations.length} conversation{conversations.length === 1 ? '' : 's'}</p>
+        </header>
 
-        {loadingConversations ? <p className="mb-3 text-sm text-muted">Loading conversations...</p> : null}
-        {statusMessage ? <p className="mb-3 text-sm text-muted">{statusMessage}</p> : null}
+        {loadingConversations ? <p className="px-3 py-1.5 text-sm text-muted">Loading conversations...</p> : null}
+        {statusMessage ? <p className="px-3 py-1.5 text-sm text-muted">{statusMessage}</p> : null}
 
-        <div className="space-y-2">
+        <div className="max-h-[62vh] overflow-y-auto lg:max-h-[calc(100vh-14rem)]">
           {conversations.map((conversation) => {
             const isActive = conversation.id === activeConversationId
-
+            const hasUnread = Number(conversation.unread_count || 0) > 0 && !isActive
             return (
               <button
                 key={conversation.id}
                 type="button"
-                onClick={() => setActiveConversationId(conversation.id)}
-                className={`w-full rounded-xl border p-3 text-left transition ${
-                  isActive
-                    ? 'border-accent bg-accentSoft'
-                    : 'border-line bg-white hover:border-accent hover:bg-accentSoft/60'
+                onClick={() => {
+                  activateConversation(conversation.id, { opened: true })
+                }}
+                className={`group flex w-full items-center gap-2 border-b border-line/70 px-3 py-2 text-left transition ${
+                  isActive ? 'bg-accentSoft/70' : 'bg-white hover:bg-accentSoft/30'
                 }`}
               >
-                <div className="flex items-center gap-2">
-                  <img
-                    src={conversation.partner_avatar}
-                    alt={conversation.partner_name}
-                    className="h-9 w-9 rounded-full object-cover"
-                    onError={(event) => {
-                      event.currentTarget.src = '/placeholders/avatar-anya.svg'
-                    }}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-semibold text-ink">{conversation.partner_name}</p>
-                    <p className="truncate text-sm text-muted">{conversation.last_message}</p>
-                    <div className="mt-0.5 flex items-center gap-2">
-                      <p className="text-[11px] text-muted">{timeAgo(conversation.last_message_at)}</p>
-                      {conversation.request_status === 'pending' ? (
-                        <span className="rounded-full bg-accentSoft px-2 py-0.5 text-[10px] font-semibold text-accentStrong">
-                          Request pending
+                <img
+                  src={conversation.partner_avatar}
+                  alt={conversation.partner_name}
+                  className="h-8 w-8 rounded-full object-cover ring-1 ring-line"
+                  onError={(event) => {
+                    event.currentTarget.src = '/placeholders/avatar-anya.svg'
+                  }}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="truncate text-xs font-semibold text-ink">{conversation.partner_name}</p>
+                    <div className="flex items-center gap-2">
+                      {hasUnread ? (
+                        <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-accent px-1 py-0.5 text-[10px] font-semibold text-white">
+                          {conversation.unread_count > 99 ? '99+' : conversation.unread_count}
                         </span>
                       ) : null}
+                      <p className="text-[10px] text-muted">{timeAgo(conversation.last_message_at)}</p>
                     </div>
                   </div>
+                  <p className={`truncate text-[10px] ${hasUnread ? 'font-semibold text-ink' : 'text-muted'}`}>
+                    {conversation.last_message}
+                  </p>
+                  {conversation.request_status === 'pending' ? (
+                    <span className="mt-1 inline-flex rounded-full bg-accentSoft px-1.5 py-0.5 text-[10px] font-semibold text-accentStrong">
+                      Request pending
+                    </span>
+                  ) : null}
                 </div>
               </button>
             )
@@ -778,31 +1060,49 @@ export default function MessagesPage() {
         </div>
       </aside>
 
-      <section className="surface flex min-h-[560px] flex-col p-4">
+      <section className={`surface min-h-[70vh] flex-col overflow-hidden p-0 ${showMobileThread ? 'flex' : 'hidden lg:flex'}`}>
         {!activeConversation ? (
           <div className="flex flex-1 items-center justify-center">
             <p className="text-sm text-muted">No conversation selected.</p>
           </div>
         ) : (
           <>
-            <div className="mb-4 border-b border-line pb-3">
-              <div className="flex items-center gap-2">
+            <header className="border-b border-line bg-white px-4 py-3">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  className="btn-muted h-8 w-8 px-0 lg:hidden"
+                  onClick={() => setShowMobileThread(false)}
+                  aria-label="Close chat"
+                >
+                  {'<'}
+                </button>
                 <img
                   src={activeConversation.partner_avatar}
                   alt={activeConversation.partner_name}
-                  className="h-10 w-10 rounded-full object-cover"
+                  className="h-10 w-10 rounded-full object-cover ring-1 ring-line"
                   onError={(event) => {
                     event.currentTarget.src = '/placeholders/avatar-anya.svg'
                   }}
                 />
-                <div>
-                  <h2 className="text-lg font-semibold text-ink">{activeConversation.partner_name}</h2>
+                <div className="min-w-0">
+                  <h2 className="truncate text-base font-semibold text-ink">{activeConversation.partner_name}</h2>
                   <div className="flex items-center gap-2">
                     <span className={`inline-block h-2.5 w-2.5 rounded-full ${partnerOnline ? 'bg-emerald-500' : 'bg-line'}`} />
-                    <span className="text-xs text-muted">{partnerOnline ? 'Online' : 'Offline'}</span>
+                    <span className="text-xs text-muted">{partnerOnline ? 'Active now' : 'Offline'}</span>
                     {partnerTyping ? <span className="text-xs text-muted">Typing...</span> : null}
                   </div>
                 </div>
+              </div>
+              <div className="mt-2 flex justify-end">
+                <button
+                  type="button"
+                  className="btn-muted h-8 px-3 text-xs text-[#b3261e] hover:border-[#b3261e]"
+                  disabled={deletingConversation}
+                  onClick={handleDeleteConversation}
+                >
+                  {deletingConversation ? 'Deleting chat...' : 'Delete chat'}
+                </button>
               </div>
               {activeRequestStatus === 'pending' ? (
                 <div className="mt-3 rounded-xl border border-line bg-accentSoft/60 p-3">
@@ -833,44 +1133,64 @@ export default function MessagesPage() {
                   ) : null}
                 </div>
               ) : null}
-            </div>
+            </header>
 
-            <div className="flex-1 space-y-3 overflow-y-auto pr-2">
+            <div
+              ref={messagesViewportRef}
+              className="flex-1 space-y-2.5 overflow-y-auto bg-[#eef1f5] px-3 py-4 sm:px-5"
+            >
               {loadingMessages ? <p className="text-sm text-muted">Loading messages...</p> : null}
               {!loadingMessages && !messages.length ? (
                 <p className="text-sm text-muted">No messages yet. Start the conversation.</p>
               ) : null}
               {messages.map((message) => {
                 const mine = String(message.sender_id || '') === currentUserId
+                const deletingThisMessage = deletingMessageId === String(message.id)
+                const sentTimeLabel = formatMessageTime(message.created_at)
                 return (
-                  <div
-                    key={message.id}
-                    className={`max-w-[82%] rounded-2xl px-4 py-2 text-sm ${
-                      mine ? 'ml-auto bg-accent text-white' : 'bg-accentSoft text-ink'
-                    }`}
-                  >
-                    {message.content ? <p>{message.content}</p> : null}
-                    {message.image_url ? (
-                      <img
-                        src={message.image_url}
-                        alt="Attachment"
-                        className="mt-2 max-h-52 w-full rounded-xl object-cover"
-                        onError={(event) => {
-                          event.currentTarget.src = '/placeholders/listing-home.svg'
-                        }}
-                      />
-                    ) : null}
-                    <div className={`mt-1 text-[11px] ${mine ? 'text-white/80' : 'text-muted'}`}>
-                      {timeAgo(message.created_at)} | {mine ? (message.is_seen ? 'Seen' : 'Delivered') : 'Received'}
-                    </div>
+                  <div key={message.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
+                    <article
+                      className={`max-w-[85%] rounded-3xl px-3.5 py-2.5 text-sm leading-5 ${
+                        mine
+                          ? 'rounded-br-lg bg-accent text-white'
+                          : 'rounded-bl-lg bg-white text-ink shadow-sm'
+                      }`}
+                    >
+                      {message.content ? <p className="whitespace-pre-wrap break-words">{message.content}</p> : null}
+                      {message.image_url ? (
+                        <img
+                          src={message.image_url}
+                          alt="Attachment"
+                          className="mt-2 max-h-52 w-full rounded-2xl object-cover"
+                          onError={(event) => {
+                            event.currentTarget.src = '/placeholders/listing-home.svg'
+                          }}
+                        />
+                      ) : null}
+                      {mine ? (
+                        <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px] text-white/90">
+                          <span>{`${sentTimeLabel} | ${message.is_seen ? 'Seen' : 'Delivered'}`}</span>
+                          <button
+                            type="button"
+                            className="font-semibold text-white/90 underline-offset-2 hover:text-white hover:underline disabled:opacity-60"
+                            onClick={() => handleDeleteMessage(message.id)}
+                            disabled={deletingThisMessage}
+                          >
+                            {deletingThisMessage ? 'Deleting...' : 'Delete'}
+                          </button>
+                        </div>
+                      ) : (
+                        <p className="mt-1.5 text-[10px] text-muted">{sentTimeLabel}</p>
+                      )}
+                    </article>
                   </div>
                 )
               })}
             </div>
 
-            <form onSubmit={handleSend} className="mt-4 space-y-2">
+            <form onSubmit={handleSend} className="border-t border-line bg-white px-3 py-3 sm:px-4">
               {attachment ? (
-                <div className="rounded-xl border border-line bg-white p-2">
+                <div className="mb-2 rounded-xl border border-line bg-white p-2">
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <p className="text-xs font-semibold text-muted">Attachment: {attachment.name}</p>
                     <button
@@ -881,20 +1201,18 @@ export default function MessagesPage() {
                       Remove
                     </button>
                   </div>
-                  <img src={attachment.previewUrl} alt={attachment.name} className="max-h-44 w-full rounded-lg object-cover" />
+                  <img src={attachment.previewUrl} alt={attachment.name} className="max-h-44 w-full rounded-xl object-cover" />
                 </div>
               ) : null}
 
-              <div className="grid gap-2 sm:grid-cols-[1fr,auto,auto]">
-                <input
-                  className="input"
-                  placeholder={composerPlaceholder}
-                  value={draft}
-                  onChange={handleDraftChange}
-                  disabled={!canMessage || sending}
-                />
-                <label className={`btn-muted cursor-pointer ${!canMessage || sending ? 'opacity-50' : ''}`}>
-                  Attach image
+              <div className="flex items-center gap-2">
+                <label
+                  className={`inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-full border border-line bg-white text-xl font-semibold text-muted ${
+                    !canMessage || sending ? 'opacity-50' : 'hover:border-accent hover:text-accent'
+                  }`}
+                  title="Attach image"
+                >
+                  +
                   <input
                     type="file"
                     className="hidden"
@@ -903,11 +1221,22 @@ export default function MessagesPage() {
                     onChange={(event) => handleAttachmentSelect(event.target.files)}
                   />
                 </label>
-                <button type="submit" className="btn-primary" disabled={!canMessage || sending}>
-                  {sending ? 'Sending...' : 'Send'}
+                <input
+                  className="input h-10 rounded-full border-line bg-[#f2f4f7] px-4 focus:ring-0"
+                  placeholder={composerPlaceholder}
+                  value={draft}
+                  onChange={handleDraftChange}
+                  disabled={!canMessage || sending}
+                />
+                <button
+                  type="submit"
+                  className="inline-flex h-10 items-center justify-center rounded-full bg-accent px-4 text-sm font-semibold text-white transition hover:bg-accentStrong disabled:opacity-50"
+                  disabled={!canMessage || sending}
+                >
+                  {sending ? '...' : 'Send'}
                 </button>
               </div>
-              {composerFeedback ? <p className="text-xs text-muted">{composerFeedback}</p> : null}
+              {composerFeedback ? <p className="mt-2 text-xs text-muted">{composerFeedback}</p> : null}
             </form>
           </>
         )}

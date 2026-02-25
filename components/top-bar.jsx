@@ -7,6 +7,7 @@ import { runWithMissingColumnFallback } from '@/lib/supabase/query-compat'
 import { getProfilePictureValue, resolveProfilePictureUrl } from '@/lib/utils/media-url'
 import { useAuth } from '@/src/context/auth-context'
 import { useI18n } from '@/src/context/i18n-context'
+import { useTheme } from '@/src/context/theme-context'
 
 const navLinks = [
   { href: '/explore', key: 'topbar.nav.explore' },
@@ -14,12 +15,13 @@ const navLinks = [
   { href: '/messages', key: 'topbar.nav.messages' },
 ]
 
-export default function TopBar() {
+export default function TopBar({ unreadMessageCount = 0 }) {
   const navigate = useNavigate()
   const location = useLocation()
   const { pathname } = location
   const { isAuthenticated, isLoading, user, signOut } = useAuth()
   const { t, language, setLanguage, availableLanguages } = useI18n()
+  const { isDark, toggleTheme } = useTheme()
   const [localProfilePicture, setLocalProfilePicture] = useState('')
   const [remoteProfilePicture, setRemoteProfilePicture] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
@@ -274,19 +276,48 @@ export default function TopBar() {
                 key={item.href}
                 to={item.href}
                 className={clsx(
-                  'rounded-full px-3 py-1.5 text-xs font-semibold transition',
+                  'relative rounded-full px-3 py-1.5 text-xs font-semibold transition',
                   isNavActive(item.href)
                     ? 'bg-accent text-white'
                     : 'text-muted hover:bg-accentSoft hover:text-accentStrong',
                 )}
               >
                 {t(item.key)}
+                {item.href === '/messages' && unreadMessageCount > 0 ? (
+                  <span className="absolute -right-1 -top-1 inline-flex min-w-4 items-center justify-center rounded-full bg-[#d93025] px-1 text-[10px] font-bold leading-4 text-white">
+                    {unreadMessageCount > 99 ? '99+' : unreadMessageCount}
+                  </span>
+                ) : null}
               </Link>
             ))}
           </nav>
         </div>
 
         <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
+          <button
+            type="button"
+            onClick={toggleTheme}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-line bg-white text-ink transition hover:border-accent hover:text-accent"
+            aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            {isDark ? (
+              <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-4 w-4">
+                <circle cx="10" cy="10" r="3.1" stroke="currentColor" strokeWidth="1.6" />
+                <path d="M10 2.8v2.2M10 15v2.2M2.8 10H5M15 10h2.2M4.8 4.8l1.6 1.6M13.6 13.6l1.6 1.6M15.2 4.8l-1.6 1.6M6.4 13.6l-1.6 1.6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-4 w-4">
+                <path
+                  d="M14.6 12.8a6.1 6.1 0 0 1-7.4-7.4 6.5 6.5 0 1 0 7.4 7.4z"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            )}
+          </button>
           <label className="sr-only" htmlFor="language-select">
             {t('language.label')}
           </label>

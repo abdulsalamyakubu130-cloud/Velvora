@@ -11,7 +11,6 @@ node_modules
 dist
 .next
 out
-.vercel
 *.local
 .env.local
 .env*.local

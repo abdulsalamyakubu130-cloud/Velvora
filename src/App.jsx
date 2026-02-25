@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-dom'
 import TopBar from '@/components/top-bar'
 import MobileNav from '@/components/mobile-nav'
@@ -6,6 +6,8 @@ import RequireAuth from '@/components/require-auth'
 import RequireAdmin from '@/components/require-admin'
 import { AuthProvider, useAuth } from '@/src/context/auth-context'
 import { I18nProvider, useI18n } from '@/src/context/i18n-context'
+import { ThemeProvider } from '@/src/context/theme-context'
+import { useUnreadMessageCount } from '@/src/hooks/use-unread-message-count'
 import { ADMIN_BASE_PATH, ADMIN_SIGNIN_PATH, ADMIN_SIGNOUT_PATH, isAdminPath } from '@/lib/admin/config'
 
 const HomePage = lazy(() => import('@/src/pages/home'))
@@ -74,14 +76,45 @@ function RouteFallback() {
   return <p className="text-sm text-muted">Loading...</p>
 }
 
+function InitialPreloader() {
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-canvas">
+      <div className="flex flex-col items-center gap-4">
+        <div className="relative inline-flex h-16 w-16 items-center justify-center overflow-hidden rounded-2xl border border-line bg-panel p-2 shadow-soft">
+          <img src="/favicon.svg" alt="Velvora logo" className="h-full w-full object-contain" />
+          <div className="pointer-events-none absolute inset-0 animate-spin rounded-2xl border-2 border-transparent border-t-accent/80" />
+        </div>
+        <p className="text-sm font-semibold text-ink">Velvora</p>
+        <div className="h-1.5 w-32 overflow-hidden rounded-full bg-accentSoft">
+          <div className="h-full w-1/2 animate-pulse rounded-full bg-accent" />
+        </div>
+        <p className="text-xs font-semibold text-muted">Buy. Sell. Connect.</p>
+      </div>
+    </div>
+  )
+}
+
 function AppLayout() {
   const { pathname } = useLocation()
   const isAdminArea = isAdminPath(pathname)
+  const [showPreloader, setShowPreloader] = useState(true)
+  const unreadMessageCount = useUnreadMessageCount({ enabled: !isAdminArea })
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setShowPreloader(false)
+    }, 1100)
+    return () => window.clearTimeout(timeoutId)
+  }, [])
+
+  if (showPreloader) {
+    return <InitialPreloader />
+  }
 
   return (
     <>
       <div className="ambient-bg" aria-hidden="true" />
-      {isAdminArea ? <AdminTopBar /> : <TopBar />}
+      {isAdminArea ? <AdminTopBar /> : <TopBar unreadMessageCount={unreadMessageCount} />}
       <main
         className={
           isAdminArea
@@ -172,19 +205,24 @@ function AppLayout() {
           </Routes>
         </Suspense>
       </main>
-      {!isAdminArea ? <MobileNav /> : null}
+      {!isAdminArea ? <MobileNav unreadMessageCount={unreadMessageCount} /> : null}
     </>
   )
 }
 
 export default function App() {
   return (
-    <I18nProvider>
-      <AuthProvider>
-        <BrowserRouter>
-          <AppLayout />
-        </BrowserRouter>
-      </AuthProvider>
-    </I18nProvider>
+    <ThemeProvider>
+      <I18nProvider>
+        <AuthProvider>
+          <BrowserRouter>
+            <AppLayout />
+          </BrowserRouter>
+        </AuthProvider>
+      </I18nProvider>
+    </ThemeProvider>
   )
 }
+
+
+
