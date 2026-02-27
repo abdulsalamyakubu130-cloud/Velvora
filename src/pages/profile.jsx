@@ -167,23 +167,37 @@ export default function ProfilePage() {
         accepts_message_requests: false,
       }
     : null
-  const hasLiveProfile = Boolean(liveUser)
-  const user = liveUser || fallbackUser
-  const userProfilePicture = getProfilePictureValue(user)
-  const isOwnProfile = Boolean(authUser?.id && user?.id && String(authUser.id) === String(user.id))
-  const userPosts = hasLiveProfile ? livePosts : []
-  const viewerLocation = resolveViewerLocation(authUser)
-  const canInteract = Boolean(authUser?.id)
   const localProfilePictureKey = useMemo(() => {
     if (!authUser?.id) return ''
     return `velvora:local-profile-picture:${authUser.id}`
   }, [authUser?.id])
   const liveProfileRequestIdRef = useRef(0)
   const liveUserRef = useRef(liveUser)
+  const cachedProfileByRouteRef = useRef({ route: '', user: null, posts: [] })
+  const cachedProfileForRoute =
+    normalizedRouteHandle && cachedProfileByRouteRef.current.route === normalizedRouteHandle
+      ? cachedProfileByRouteRef.current
+      : null
+  const hasLiveProfile = Boolean(liveUser)
+  const user = liveUser || fallbackUser || cachedProfileForRoute?.user || null
+  const userProfilePicture = getProfilePictureValue(user)
+  const isOwnProfile = Boolean(authUser?.id && user?.id && String(authUser.id) === String(user.id))
+  const userPosts = hasLiveProfile ? livePosts : cachedProfileForRoute?.posts || []
+  const viewerLocation = resolveViewerLocation(authUser)
+  const canInteract = Boolean(authUser?.id)
 
   useEffect(() => {
     liveUserRef.current = liveUser
   }, [liveUser])
+
+  useEffect(() => {
+    if (!liveUser || !normalizedRouteHandle) return
+    cachedProfileByRouteRef.current = {
+      route: normalizedRouteHandle,
+      user: liveUser,
+      posts: Array.isArray(livePosts) ? livePosts : [],
+    }
+  }, [livePosts, liveUser, normalizedRouteHandle])
 
   const refreshLiveProfile = useCallback(async () => {
     const requestId = liveProfileRequestIdRef.current + 1
@@ -198,6 +212,13 @@ export default function ProfilePage() {
       return currentId === normalizedRouteHandle || currentUsername === normalizedRouteHandle
     }
     const shouldKeepCurrentProfile = () => {
+      const cachedProfile = cachedProfileByRouteRef.current
+      const cachedRouteMatches = Boolean(
+        normalizedRouteHandle &&
+          cachedProfile?.route === normalizedRouteHandle &&
+          cachedProfile?.user,
+      )
+      if (cachedRouteMatches) return true
       if (doesLiveUserMatchRoute()) return true
       return Boolean(isMyProfileRoute && authUser?.id)
     }
@@ -245,7 +266,7 @@ export default function ProfilePage() {
       let profileRow = null
 
       const { data: byUsername } = await selectProfilesWithFallback((selectClause) =>
-        supabase.from('users').select(selectClause).ilike('username', username).maybeSingle(),
+        supabase.from('users').select(selectClause).eq('username', username).maybeSingle(),
       )
 
       profileRow = byUsername || null
