@@ -815,22 +815,36 @@ export default function MessagesPage() {
     setDeletingMessageId(normalizedMessageId)
     setComposerFeedback('')
 
-    const { data: deletedMessageRow, error: hardDeleteError } = await supabase
+    const { data: deletedRows, error: hardDeleteError } = await supabase
       .from('messages')
       .delete()
       .eq('id', normalizedMessageId)
       .eq('sender_id', currentUserId)
-      .eq('conversation_id', activeConversationId)
       .select('id')
-      .maybeSingle()
-
-    setDeletingMessageId('')
+    let deleteConfirmed = Array.isArray(deletedRows) && deletedRows.length > 0
 
     if (hardDeleteError) {
+      setDeletingMessageId('')
       setComposerFeedback(hardDeleteError.message || 'Failed to delete message permanently.')
       return
     }
-    if (!deletedMessageRow?.id) {
+
+    if (!deleteConfirmed) {
+      const { data: existingRow, error: verifyError } = await supabase
+        .from('messages')
+        .select('id')
+        .eq('id', normalizedMessageId)
+        .maybeSingle()
+
+      // Some PostgREST setups do not return deleted rows in DELETE ... SELECT.
+      if (verifyError || !existingRow?.id) {
+        deleteConfirmed = true
+      }
+    }
+
+    setDeletingMessageId('')
+
+    if (!deleteConfirmed) {
       setComposerFeedback('Message was not deleted permanently. Refresh and try again.')
       await loadMessages({ silent: true })
       return
