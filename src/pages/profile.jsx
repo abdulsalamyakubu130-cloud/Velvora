@@ -125,12 +125,13 @@ export default function ProfilePage() {
   const { username: rawUsername = '' } = useParams()
   const { user: authUser, isLoading: authLoading } = useAuth()
   const { t } = useI18n()
-  const username = normalizeProfileHandle(rawUsername)
+  const routeUsername = normalizeProfileHandle(rawUsername)
   const authUsername =
     authUser?.user_metadata?.username ||
     authUser?.email?.split('@')[0] ||
     authUser?.phone?.replace(/[^\d]/g, '') ||
     ''
+  const username = routeUsername || normalizeProfileHandle(authUser?.id || authUsername)
   const normalizedAuthUsername = normalizeProfileHandle(authUsername)
   const normalizedAuthId = String(authUser?.id || '').toLowerCase()
   const normalizedRouteHandle = String(username || '').toLowerCase()

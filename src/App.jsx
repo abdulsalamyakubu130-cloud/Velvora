@@ -157,6 +157,10 @@ function AppLayout() {
               path="/profile/:username"
               element={<ProfilePage />}
             />
+            <Route
+              path="/profile"
+              element={<ProfilePage />}
+            />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>

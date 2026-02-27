@@ -819,7 +819,6 @@ export default function MessagesPage() {
       .from('messages')
       .delete()
       .eq('id', normalizedMessageId)
-      .eq('sender_id', currentUserId)
       .select('id')
     let deleteConfirmed = Array.isArray(deletedRows) && deletedRows.length > 0
 
@@ -830,22 +829,28 @@ export default function MessagesPage() {
     }
 
     if (!deleteConfirmed) {
-      const { data: existingRow, error: verifyError } = await supabase
-        .from('messages')
-        .select('id')
-        .eq('id', normalizedMessageId)
-        .maybeSingle()
+      // Retry existence checks to avoid false negatives when reads lag behind writes.
+      for (let attempt = 0; attempt < 3 && !deleteConfirmed; attempt += 1) {
+        await new Promise((resolve) => {
+          window.setTimeout(resolve, 180 * (attempt + 1))
+        })
 
-      // Some PostgREST setups do not return deleted rows in DELETE ... SELECT.
-      if (verifyError || !existingRow?.id) {
-        deleteConfirmed = true
+        const { data: existingRow, error: verifyError } = await supabase
+          .from('messages')
+          .select('id')
+          .eq('id', normalizedMessageId)
+          .maybeSingle()
+
+        if (verifyError || !existingRow?.id) {
+          deleteConfirmed = true
+        }
       }
     }
 
     setDeletingMessageId('')
 
     if (!deleteConfirmed) {
-      setComposerFeedback('Message was not deleted permanently. Refresh and try again.')
+      setComposerFeedback('Unable to permanently delete this message right now. Try again.')
       await loadMessages({ silent: true })
       return
     }
