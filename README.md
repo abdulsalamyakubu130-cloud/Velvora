@@ -56,6 +56,9 @@ Social commerce marketplace web app built with React (JSX) + Vite + Tailwind + S
    - `VITE_AUTH_REDIRECT_URL` (example: `http://localhost:5173/auth`)
    - `VITE_ADMIN_PANEL_PASSWORD`
    - `VITE_ADMIN_EMAILS` (comma-separated admin emails)
+   - `VITE_BOOST_TRANSFER_BANK_NAME` (example: `PalmPay`)
+   - `VITE_BOOST_TRANSFER_ACCOUNT_NAME`
+   - `VITE_BOOST_TRANSFER_ACCOUNT_NUMBER`
 4. Run dev server:
    - `npm run dev`
 
@@ -72,6 +75,9 @@ Social commerce marketplace web app built with React (JSX) + Vite + Tailwind + S
    - `VITE_AUTH_REDIRECT_URL` (set to `https://YOUR_DOMAIN/auth`)
    - `VITE_ADMIN_PANEL_PASSWORD`
    - `VITE_ADMIN_EMAILS`
+   - `VITE_BOOST_TRANSFER_BANK_NAME`
+   - `VITE_BOOST_TRANSFER_ACCOUNT_NAME`
+   - `VITE_BOOST_TRANSFER_ACCOUNT_NUMBER`
 5. Deploy.
 
 Notes:
@@ -91,6 +97,7 @@ Run SQL in this order from Supabase SQL Editor:
 7. `supabase/kyc_and_limits.sql` (verification tiers + post limits for unverified sellers)
 8. `supabase/anti_fraud.sql` (suspicious signup blocking rules + risk audit table)
 9. `supabase/location_defaults.sql` (sets default account location to Nigeria for existing users)
+10. `supabase/post_boosts.sql` (paid boost orders + admin approval workflow for promoted listings)
 
 ## Database Collections/Tables
 

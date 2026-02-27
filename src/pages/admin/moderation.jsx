@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { buildProfilePath, normalizeVerificationTier } from '@/lib/utils'
+import { formatBoostTierLabel } from '@/lib/monetization/boost-plans'
 import { getSupabaseBrowserClient, isSupabaseConfigured } from '@/lib/supabase/client'
 import { useAuth } from '@/src/context/auth-context'
 
@@ -12,6 +13,8 @@ const initialOverview = {
   openReports: 0,
   flaggedUsers: 0,
   blockedActions: 0,
+  pendingBoostOrders: 0,
+  activeBoosts: 0,
 }
 
 function formatTierLabel(tier) {
@@ -45,16 +48,55 @@ function statusLabel(status) {
   return 'Active'
 }
 
+function isMissingTableError(error, tableName) {
+  const message = String(error?.message || '').toLowerCase()
+  return (
+    error?.code === 'PGRST205' ||
+    message.includes(`public.${String(tableName || '').toLowerCase()}`) && message.includes('schema cache') ||
+    message.includes(`relation "public.${String(tableName || '').toLowerCase()}" does not exist`) ||
+    message.includes(`relation "${String(tableName || '').toLowerCase()}" does not exist`)
+  )
+}
+
+function normalizeBoostStatus(status) {
+  if (status === 'active') return 'active'
+  if (status === 'rejected') return 'rejected'
+  if (status === 'expired') return 'expired'
+  if (status === 'cancelled') return 'cancelled'
+  return 'pending'
+}
+
+function boostStatusBadgeClass(status) {
+  const normalized = normalizeBoostStatus(status)
+  if (normalized === 'active') return 'rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700'
+  if (normalized === 'pending') return 'rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700'
+  if (normalized === 'rejected') return 'rounded-full bg-red-100 px-2.5 py-1 text-xs font-semibold text-red-700'
+  if (normalized === 'expired') return 'rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700'
+  return 'pill'
+}
+
+function boostStatusLabel(status) {
+  const normalized = normalizeBoostStatus(status)
+  if (normalized === 'active') return 'Active'
+  if (normalized === 'pending') return 'Pending payment'
+  if (normalized === 'rejected') return 'Rejected'
+  if (normalized === 'expired') return 'Expired'
+  if (normalized === 'cancelled') return 'Cancelled'
+  return 'Pending payment'
+}
+
 export default function ModerationPage() {
   const { user: authUser } = useAuth()
   const [overview, setOverview] = useState(initialOverview)
   const [users, setUsers] = useState([])
   const [pendingKycRequests, setPendingKycRequests] = useState([])
+  const [boostOrders, setBoostOrders] = useState([])
   const [searchValue, setSearchValue] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [isLoading, setIsLoading] = useState(true)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [actionPendingRequestId, setActionPendingRequestId] = useState('')
+  const [boostActionOrderId, setBoostActionOrderId] = useState('')
   const [accountActionUserId, setAccountActionUserId] = useState('')
   const [feedback, setFeedback] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
@@ -90,6 +132,7 @@ export default function ModerationPage() {
           setOverview(initialOverview)
           setUsers([])
           setPendingKycRequests([])
+          setBoostOrders([])
           setIsLoading(false)
           setIsRefreshing(false)
           return
@@ -101,6 +144,7 @@ export default function ModerationPage() {
           setOverview(initialOverview)
           setUsers([])
           setPendingKycRequests([])
+          setBoostOrders([])
           setIsLoading(false)
           setIsRefreshing(false)
           return
@@ -133,7 +177,7 @@ export default function ModerationPage() {
             .limit(300)
         }
 
-        const [reportsResult, pendingKycResult, blockedUsersResult, usersCountResult, verifiedUsersCountResult] = await Promise.all([
+        const [reportsResult, pendingKycResult, blockedUsersResult, usersCountResult, verifiedUsersCountResult, boostOrdersResult] = await Promise.all([
           supabase.from('reports').select('id, user_id'),
           supabase
             .from('kyc_verifications')
@@ -152,6 +196,26 @@ export default function ModerationPage() {
           supabase.from('blocked_users').select('id', { head: true, count: 'exact' }),
           supabase.from('users').select('id', { head: true, count: 'exact' }),
           supabase.from('users').select('id', { head: true, count: 'exact' }).eq('is_verified', true),
+          supabase
+            .from('post_boost_orders')
+            .select(
+              `
+                id,
+                user_id,
+                post_id,
+                plan_id,
+                boost_tier,
+                amount_ngn,
+                duration_days,
+                status,
+                payment_reference,
+                created_at,
+                starts_at,
+                ends_at
+              `,
+            )
+            .order('created_at', { ascending: false })
+            .limit(300),
         ])
 
         const primaryError = usersResult.error || usersCountResult.error || verifiedUsersCountResult.error
@@ -174,6 +238,7 @@ export default function ModerationPage() {
           setOverview(initialOverview)
           setUsers([])
           setPendingKycRequests([])
+          setBoostOrders([])
           setIsLoading(false)
           setIsRefreshing(false)
           return
@@ -192,6 +257,12 @@ export default function ModerationPage() {
         if (reportsResult.error) loadWarnings.push('Could not load reports.')
         if (pendingKycResult.error) loadWarnings.push('Could not load pending KYC queue.')
         if (blockedUsersResult.error) loadWarnings.push('Could not load blocked actions count.')
+        const boostOrdersTableMissing = isMissingTableError(boostOrdersResult.error, 'post_boost_orders')
+        if (boostOrdersResult.error && boostOrdersTableMissing) {
+          loadWarnings.push('Run supabase/post_boosts.sql to enable paid boost orders.')
+        } else if (boostOrdersResult.error) {
+          loadWarnings.push(boostOrdersResult.error.message || 'Could not load boost orders.')
+        }
 
         const missingProfileIds = [...new Set(
           pendingRows
@@ -216,6 +287,74 @@ export default function ModerationPage() {
             }
           }
         }
+
+        const boostRows = boostOrdersResult.data || []
+        const boostUserIds = [...new Set(boostRows.map((row) => row.user_id).filter(Boolean))]
+        const missingBoostSellerIds = boostUserIds.filter((id) => !usersById.has(id))
+
+        if (missingBoostSellerIds.length) {
+          const missingBoostSellersResult = await supabase
+            .from('users')
+            .select('id, username, full_name, email, country, is_verified, verification_tier')
+            .in('id', missingBoostSellerIds)
+
+          if (missingBoostSellersResult.error) {
+            loadWarnings.push('Could not load profile details for some boost orders.')
+          } else {
+            for (const row of missingBoostSellersResult.data || []) {
+              usersById.set(row.id, {
+                ...row,
+                verification_tier: normalizeVerificationTier(row.verification_tier, row.is_verified),
+              })
+            }
+          }
+        }
+
+        const boostPostIds = [...new Set(boostRows.map((row) => row.post_id).filter(Boolean))]
+        let boostPostsById = new Map()
+        if (boostPostIds.length) {
+          const boostPostsResult = await supabase.from('posts').select('id, title').in('id', boostPostIds)
+
+          if (boostPostsResult.error) {
+            loadWarnings.push('Could not load post details for some boost orders.')
+          } else {
+            boostPostsById = new Map((boostPostsResult.data || []).map((row) => [row.id, row]))
+          }
+        }
+
+        const mappedBoostOrders = boostRows.map((row) => {
+          const seller = usersById.get(row.user_id) || null
+          const post = boostPostsById.get(row.post_id) || null
+          const endsAtUnix = new Date(row.ends_at || 0).getTime()
+          const isActiveNow =
+            normalizeBoostStatus(row.status) === 'active' &&
+            Number.isFinite(endsAtUnix) &&
+            endsAtUnix > Date.now()
+
+          return {
+            id: row.id,
+            userId: row.user_id,
+            postId: row.post_id,
+            planId: row.plan_id || '',
+            boostTier: row.boost_tier || '',
+            amountNgn: Number(row.amount_ngn) || 0,
+            durationDays: Number(row.duration_days) || 0,
+            status: isActiveNow ? 'active' : normalizeBoostStatus(row.status),
+            paymentReference: row.payment_reference || '',
+            createdAt: row.created_at || null,
+            startsAt: row.starts_at || null,
+            endsAt: row.ends_at || null,
+            postTitle: post?.title || 'Untitled post',
+            seller: seller
+              ? {
+                  id: seller.id,
+                  username: seller.username || '',
+                  full_name: seller.full_name || seller.username || 'Seller',
+                  email: seller.email || '',
+                }
+              : null,
+          }
+        })
 
         const statusRowsResult = await supabase.from('user_account_status').select('user_id, status, reason, updated_at')
 
@@ -273,6 +412,13 @@ export default function ModerationPage() {
           }
         })
 
+        const pendingBoostOrdersCount = mappedBoostOrders.filter((order) => normalizeBoostStatus(order.status) === 'pending').length
+        const activeBoostOrdersCount = mappedBoostOrders.filter((order) => {
+          if (normalizeBoostStatus(order.status) !== 'active') return false
+          const endsAtUnix = new Date(order.endsAt || 0).getTime()
+          return Number.isFinite(endsAtUnix) && endsAtUnix > Date.now()
+        }).length
+
         setOverview({
           totalUsers: Number(usersCountResult.count) || usersWithStatus.length,
           verifiedUsers: Number(verifiedUsersCountResult.count) || usersWithStatus.filter((row) => row.is_verified).length,
@@ -281,9 +427,12 @@ export default function ModerationPage() {
           openReports: reports.length,
           flaggedUsers: flaggedUserIds.size,
           blockedActions: Number(blockedUsersResult.count) || 0,
+          pendingBoostOrders: pendingBoostOrdersCount,
+          activeBoosts: activeBoostOrdersCount,
         })
         setUsers(usersWithStatus)
         setPendingKycRequests(nextPendingKycRequests)
+        setBoostOrders(mappedBoostOrders)
         setStatusFeatureEnabled(canManageStatus)
         setWarningMessage(loadWarnings.join(' '))
         setIsLoading(false)
@@ -296,6 +445,7 @@ export default function ModerationPage() {
         setOverview(initialOverview)
         setUsers([])
         setPendingKycRequests([])
+        setBoostOrders([])
         setStatusFeatureEnabled(false)
         setErrorMessage(
           isNetworkError
@@ -470,10 +620,117 @@ export default function ModerationPage() {
     await loadModerationData({ silent: true })
   }
 
+  async function handleBoostOrderDecision(order, nextStatus) {
+    if (!authUser?.id || !order?.id) return
+
+    const supabase = getSupabaseBrowserClient()
+    if (!supabase) {
+      setErrorMessage('Unable to connect to Supabase right now.')
+      return
+    }
+
+    setBoostActionOrderId(order.id)
+    setFeedback('')
+    setErrorMessage('')
+
+    const nowIso = new Date().toISOString()
+    const durationDays = Number(order.durationDays) > 0 ? Number(order.durationDays) : 3
+
+    let updatePayload
+    if (nextStatus === 'active') {
+      updatePayload = {
+        status: 'active',
+        starts_at: nowIso,
+        ends_at: new Date(Date.now() + durationDays * 24 * 60 * 60 * 1000).toISOString(),
+        reviewed_by: authUser.id,
+        reviewed_at: nowIso,
+      }
+    } else if (nextStatus === 'expired') {
+      updatePayload = {
+        status: 'expired',
+        ends_at: nowIso,
+        reviewed_by: authUser.id,
+        reviewed_at: nowIso,
+      }
+    } else {
+      updatePayload = {
+        status: 'rejected',
+        starts_at: null,
+        ends_at: null,
+        reviewed_by: authUser.id,
+        reviewed_at: nowIso,
+      }
+    }
+
+    let updateResult = await supabase
+      .from('post_boost_orders')
+      .update(updatePayload)
+      .eq('id', order.id)
+      .select('id')
+      .maybeSingle()
+
+    const reviewedByForeignKeyError = String(updateResult.error?.message || '')
+      .toLowerCase()
+      .includes('reviewed_by')
+
+    if (reviewedByForeignKeyError) {
+      const fallbackPayload = { ...updatePayload }
+      delete fallbackPayload.reviewed_by
+      updateResult = await supabase
+        .from('post_boost_orders')
+        .update(fallbackPayload)
+        .eq('id', order.id)
+        .select('id')
+        .maybeSingle()
+    }
+
+    setBoostActionOrderId('')
+
+    if (updateResult.error) {
+      setErrorMessage(
+        isMissingTableError(updateResult.error, 'post_boost_orders')
+          ? 'Boost table is missing. Run supabase/post_boosts.sql first.'
+          : updateResult.error.message || 'Failed to update boost order.',
+      )
+      return
+    }
+
+    if (!updateResult.data) {
+      const { data: latestOrder } = await supabase
+        .from('post_boost_orders')
+        .select('id, status')
+        .eq('id', order.id)
+        .maybeSingle()
+
+      const latestStatus = normalizeBoostStatus(latestOrder?.status)
+      const originalStatus = normalizeBoostStatus(order.status)
+
+      if (latestOrder?.id && latestStatus === originalStatus) {
+        setErrorMessage(
+          'Boost update is blocked by Supabase RLS. Add your admin email to `is_marketplace_admin()` in `supabase/post_boosts.sql` and run it again.',
+        )
+      } else {
+        setFeedback('Boost order is no longer editable. Panel refreshed.')
+      }
+      await loadModerationData({ silent: true })
+      return
+    }
+
+    if (nextStatus === 'active') {
+      setFeedback(`Boost activated for "${order.postTitle}".`)
+    } else if (nextStatus === 'expired') {
+      setFeedback(`Boost expired for "${order.postTitle}".`)
+    } else {
+      setFeedback(`Boost order rejected for "${order.postTitle}".`)
+    }
+
+    await loadModerationData({ silent: true })
+  }
+
   return (
-    <div className="mx-auto w-full max-w-6xl space-y-4">
-      <header className="surface p-5">
-        <h1 className="font-brand text-2xl font-semibold">Admin Panel</h1>
+    <div className="mx-auto w-full max-w-6xl space-y-3 sm:space-y-4">
+      <header className="surface p-4 sm:p-5">
+        <h1 className="font-brand text-xl font-semibold sm:text-2xl">Admin Panel</h1>
         <p className="mt-1 text-sm text-muted">
           Separate control center for verification, account status review, and enforcement actions.
         </p>
@@ -484,43 +741,51 @@ export default function ModerationPage() {
         ) : null}
       </header>
 
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <article className="surface p-4">
+      <section className="grid grid-cols-2 gap-2.5 sm:grid-cols-2 sm:gap-3 xl:grid-cols-4">
+        <article className="surface p-3 sm:p-4">
           <p className="text-sm text-muted">People on website</p>
-          <p className="mt-1 text-2xl font-semibold text-ink">{overview.totalUsers.toLocaleString()}</p>
+          <p className="mt-1 text-lg font-semibold text-ink sm:text-2xl">{overview.totalUsers.toLocaleString()}</p>
         </article>
-        <article className="surface p-4">
+        <article className="surface p-3 sm:p-4">
           <p className="text-sm text-muted">Verified users</p>
-          <p className="mt-1 text-2xl font-semibold text-ink">{overview.verifiedUsers.toLocaleString()}</p>
+          <p className="mt-1 text-lg font-semibold text-ink sm:text-2xl">{overview.verifiedUsers.toLocaleString()}</p>
         </article>
-        <article className="surface p-4">
+        <article className="surface p-3 sm:p-4">
           <p className="text-sm text-muted">Pending KYC</p>
-          <p className="mt-1 text-2xl font-semibold text-ink">{overview.pendingVerification.toLocaleString()}</p>
+          <p className="mt-1 text-lg font-semibold text-ink sm:text-2xl">{overview.pendingVerification.toLocaleString()}</p>
         </article>
-        <article className="surface p-4">
+        <article className="surface p-3 sm:p-4">
           <p className="text-sm text-muted">Banned users</p>
-          <p className="mt-1 text-2xl font-semibold text-ink">{overview.bannedUsers.toLocaleString()}</p>
+          <p className="mt-1 text-lg font-semibold text-ink sm:text-2xl">{overview.bannedUsers.toLocaleString()}</p>
         </article>
-        <article className="surface p-4">
+        <article className="surface p-3 sm:p-4">
           <p className="text-sm text-muted">Open reports</p>
-          <p className="mt-1 text-2xl font-semibold text-ink">{overview.openReports.toLocaleString()}</p>
+          <p className="mt-1 text-lg font-semibold text-ink sm:text-2xl">{overview.openReports.toLocaleString()}</p>
         </article>
-        <article className="surface p-4">
+        <article className="surface p-3 sm:p-4">
           <p className="text-sm text-muted">Flagged users</p>
-          <p className="mt-1 text-2xl font-semibold text-ink">{overview.flaggedUsers.toLocaleString()}</p>
+          <p className="mt-1 text-lg font-semibold text-ink sm:text-2xl">{overview.flaggedUsers.toLocaleString()}</p>
         </article>
-        <article className="surface p-4 sm:col-span-2">
+        <article className="surface col-span-2 p-3 sm:col-span-2 sm:p-4">
           <p className="text-sm text-muted">Blocked actions</p>
-          <p className="mt-1 text-2xl font-semibold text-ink">{overview.blockedActions.toLocaleString()}</p>
+          <p className="mt-1 text-lg font-semibold text-ink sm:text-2xl">{overview.blockedActions.toLocaleString()}</p>
+        </article>
+        <article className="surface p-3 sm:p-4">
+          <p className="text-sm text-muted">Pending boosts</p>
+          <p className="mt-1 text-lg font-semibold text-ink sm:text-2xl">{overview.pendingBoostOrders.toLocaleString()}</p>
+        </article>
+        <article className="surface p-3 sm:p-4">
+          <p className="text-sm text-muted">Active boosts</p>
+          <p className="mt-1 text-lg font-semibold text-ink sm:text-2xl">{overview.activeBoosts.toLocaleString()}</p>
         </article>
       </section>
 
-      <section className="surface p-4">
+      <section className="surface p-3 sm:p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-lg font-semibold text-ink">Account status and user controls</h2>
+          <h2 className="text-base font-semibold text-ink sm:text-lg">Account status and user controls</h2>
           <button
             type="button"
-            className="btn-muted"
+            className="btn-muted text-xs sm:text-sm"
             onClick={() => loadModerationData({ silent: true })}
             disabled={isLoading || isRefreshing}
           >
@@ -562,7 +827,7 @@ export default function ModerationPage() {
               const hasUsername = Boolean(targetUser.username)
 
               return (
-                <article key={targetUser.id} className="rounded-2xl border border-line bg-white p-4">
+                <article key={targetUser.id} className="rounded-2xl border border-line bg-white p-3 sm:p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <p className="text-sm font-semibold text-ink">
@@ -583,13 +848,13 @@ export default function ModerationPage() {
 
                     <div className="flex flex-wrap gap-2">
                       {hasUsername ? (
-                        <Link to={buildProfilePath(targetUser)} className="btn-muted">
+                        <Link to={buildProfilePath(targetUser)} className="btn-muted text-xs sm:text-sm">
                           Open profile
                         </Link>
                       ) : null}
                       <button
                         type="button"
-                        className="btn-muted"
+                        className="btn-muted text-xs sm:text-sm"
                         onClick={() => handleAccountStatusChange(targetUser, 'active')}
                         disabled={accountActionUserId === targetUser.id || !statusFeatureEnabled}
                       >
@@ -597,7 +862,7 @@ export default function ModerationPage() {
                       </button>
                       <button
                         type="button"
-                        className="btn-muted"
+                        className="btn-muted text-xs sm:text-sm"
                         onClick={() => handleAccountStatusChange(targetUser, 'restricted')}
                         disabled={accountActionUserId === targetUser.id || !statusFeatureEnabled}
                       >
@@ -605,7 +870,7 @@ export default function ModerationPage() {
                       </button>
                       <button
                         type="button"
-                        className="btn-muted"
+                        className="btn-muted text-xs sm:text-sm"
                         onClick={() => handleAccountStatusChange(targetUser, 'banned')}
                         disabled={accountActionUserId === targetUser.id || !statusFeatureEnabled}
                       >
@@ -620,8 +885,8 @@ export default function ModerationPage() {
         ) : null}
       </section>
 
-      <section className="surface p-4">
-        <h2 className="text-lg font-semibold text-ink">Pending KYC verification requests</h2>
+      <section className="surface p-3 sm:p-4">
+        <h2 className="text-base font-semibold text-ink sm:text-lg">Pending KYC verification requests</h2>
         {!isLoading && !pendingKycRequests.length ? (
           <p className="mt-3 text-sm text-muted">No pending KYC requests right now.</p>
         ) : null}
@@ -629,7 +894,7 @@ export default function ModerationPage() {
         {!isLoading && pendingKycRequests.length ? (
           <div className="mt-3 space-y-3">
             {pendingKycRequests.map((request) => (
-              <article key={request.id} className="rounded-2xl border border-line bg-white p-4">
+              <article key={request.id} className="rounded-2xl border border-line bg-white p-3 sm:p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <p className="text-sm font-semibold text-ink">
@@ -647,7 +912,7 @@ export default function ModerationPage() {
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
-                      className="btn-primary"
+                      className="btn-primary text-xs sm:text-sm"
                       onClick={() => handleVerificationDecision(request, 'approved')}
                       disabled={actionPendingRequestId === request.id}
                     >
@@ -655,7 +920,7 @@ export default function ModerationPage() {
                     </button>
                     <button
                       type="button"
-                      className="btn-muted"
+                      className="btn-muted text-xs sm:text-sm"
                       onClick={() => handleVerificationDecision(request, 'rejected')}
                       disabled={actionPendingRequestId === request.id}
                     >
@@ -665,6 +930,88 @@ export default function ModerationPage() {
                 </div>
               </article>
             ))}
+          </div>
+        ) : null}
+      </section>
+
+      <section className="surface p-3 sm:p-4">
+        <h2 className="text-base font-semibold text-ink sm:text-lg">Post boost orders</h2>
+        <p className="mt-1 text-sm text-muted">
+          Approve paid boost orders to move listings higher in Home and Explore.
+        </p>
+        {!isLoading && !boostOrders.length ? (
+          <p className="mt-3 text-sm text-muted">No boost orders yet.</p>
+        ) : null}
+
+        {!isLoading && boostOrders.length ? (
+          <div className="mt-3 space-y-3">
+            {boostOrders.map((order) => {
+              const isPending = normalizeBoostStatus(order.status) === 'pending'
+              const isActive = normalizeBoostStatus(order.status) === 'active'
+              const sellerHasUsername = Boolean(order.seller?.username)
+              return (
+                <article key={order.id} className="rounded-2xl border border-line bg-white p-3 sm:p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-ink">{order.postTitle}</p>
+                      <p className="text-xs text-muted">
+                        Seller: {order.seller?.full_name || 'Unknown'} (@{order.seller?.username || 'unknown'})
+                      </p>
+                      <p className="text-xs text-muted">
+                        Plan: {formatBoostTierLabel(order.boostTier)} | N{order.amountNgn.toLocaleString()} | {order.durationDays} days
+                      </p>
+                      <p className="text-xs text-muted">
+                        Ref: {order.paymentReference || 'N/A'} | Created: {formatDateTime(order.createdAt)}
+                      </p>
+                      {order.startsAt ? (
+                        <p className="text-xs text-muted">
+                          Active window: {formatDateTime(order.startsAt)} to {formatDateTime(order.endsAt)}
+                        </p>
+                      ) : null}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={boostStatusBadgeClass(order.status)}>{boostStatusLabel(order.status)}</span>
+                      {sellerHasUsername ? (
+                        <Link to={buildProfilePath(order.seller)} className="btn-muted text-xs sm:text-sm">
+                          Seller profile
+                        </Link>
+                      ) : null}
+                      {isPending ? (
+                        <>
+                          <button
+                            type="button"
+                            className="btn-primary text-xs sm:text-sm"
+                            onClick={() => handleBoostOrderDecision(order, 'active')}
+                            disabled={boostActionOrderId === order.id}
+                          >
+                            {boostActionOrderId === order.id ? 'Saving...' : 'Activate boost'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-muted text-xs sm:text-sm"
+                            onClick={() => handleBoostOrderDecision(order, 'rejected')}
+                            disabled={boostActionOrderId === order.id}
+                          >
+                            Reject
+                          </button>
+                        </>
+                      ) : null}
+                      {isActive ? (
+                        <button
+                          type="button"
+                          className="btn-muted text-xs sm:text-sm"
+                          onClick={() => handleBoostOrderDecision(order, 'expired')}
+                          disabled={boostActionOrderId === order.id}
+                        >
+                          {boostActionOrderId === order.id ? 'Saving...' : 'Expire now'}
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                </article>
+              )
+            })}
           </div>
         ) : null}
       </section>

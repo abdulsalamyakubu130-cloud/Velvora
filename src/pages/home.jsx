@@ -4,14 +4,16 @@ import { useI18n } from '@/src/context/i18n-context'
 
 export default function HomePage() {
   const { t } = useI18n()
-  const { posts } = useLivePosts()
+  const { posts, loading, error, refresh } = useLivePosts()
 
   return (
     <MarketplaceShell
       title={t('home.title')}
       subtitle={t('home.subtitle')}
       posts={posts}
-      initialView="feed"
+      loading={loading}
+      error={error}
+      onRetry={refresh}
     />
   )
 }

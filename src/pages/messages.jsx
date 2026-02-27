@@ -455,6 +455,11 @@ export default function MessagesPage() {
         { event: 'UPDATE', schema: 'public', table: 'messages' },
         () => loadConversations({ silent: true }),
       )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'messages' },
+        () => loadConversations({ silent: true }),
+      )
       .subscribe()
 
     return () => {
@@ -541,6 +546,21 @@ export default function MessagesPage() {
       )
       .on(
         'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'messages', filter: `conversation_id=eq.${activeConversationId}` },
+        (payload) => {
+          const deletedMessageId = String(payload.old?.id || '')
+          if (deletedMessageId) {
+            setMessages((currentMessages) =>
+              currentMessages.filter((message) => String(message.id) !== deletedMessageId),
+            )
+          } else {
+            loadMessages({ silent: true })
+          }
+          loadConversations({ silent: true })
+        },
+      )
+      .on(
+        'postgres_changes',
         { event: '*', schema: 'public', table: 'message_requests', filter: `conversation_id=eq.${activeConversationId}` },
         loadConversations,
       )
@@ -591,7 +611,7 @@ export default function MessagesPage() {
       channelRef.current = null
       supabase.removeChannel(channel)
     }
-  }, [activeConversation?.partner_id, activeConversation?.partner_name, activeConversationId, currentUserId, loadConversations])
+  }, [activeConversation?.partner_id, activeConversation?.partner_name, activeConversationId, currentUserId, loadConversations, loadMessages])
 
   useEffect(() => {
     if (!activeConversationId || !currentUserId) return
@@ -774,11 +794,6 @@ export default function MessagesPage() {
       return
     }
 
-    if (typeof window !== 'undefined') {
-      const shouldDelete = window.confirm('Delete this message?')
-      if (!shouldDelete) return
-    }
-
     if (normalizedMessageId.startsWith('local-')) {
       setMessages((currentMessages) =>
         currentMessages.filter((message) => String(message.id) !== normalizedMessageId),
@@ -800,52 +815,36 @@ export default function MessagesPage() {
     setDeletingMessageId(normalizedMessageId)
     setComposerFeedback('')
 
-    const { error: hardDeleteError } = await supabase
+    const { data: deletedMessageRow, error: hardDeleteError } = await supabase
       .from('messages')
       .delete()
       .eq('id', normalizedMessageId)
       .eq('sender_id', currentUserId)
-
-    if (!hardDeleteError) {
-      setMessages((currentMessages) =>
-        currentMessages.filter((message) => String(message.id) !== normalizedMessageId),
-      )
-      setDeletingMessageId('')
-      await loadConversations({ silent: true })
-      refreshUnreadMessageBadge()
-      return
-    }
-
-    const { error: softDeleteError } = await supabase
-      .from('messages')
-      .update({ content: 'Message deleted', image_url: null })
-      .eq('id', normalizedMessageId)
-      .eq('sender_id', currentUserId)
+      .eq('conversation_id', activeConversationId)
+      .select('id')
+      .maybeSingle()
 
     setDeletingMessageId('')
 
-    if (softDeleteError) {
-      setComposerFeedback(hardDeleteError.message || softDeleteError.message || 'Failed to delete message.')
+    if (hardDeleteError) {
+      setComposerFeedback(hardDeleteError.message || 'Failed to delete message permanently.')
+      return
+    }
+    if (!deletedMessageRow?.id) {
+      setComposerFeedback('Message was not deleted permanently. Refresh and try again.')
+      await loadMessages({ silent: true })
       return
     }
 
     setMessages((currentMessages) =>
-      currentMessages.map((message) =>
-        String(message.id) === normalizedMessageId
-          ? { ...message, content: 'Message deleted', image_url: null }
-          : message,
-      ),
+      currentMessages.filter((message) => String(message.id) !== normalizedMessageId),
     )
     await loadConversations({ silent: true })
+    refreshUnreadMessageBadge()
   }
 
   async function handleDeleteConversation() {
     if (!activeConversationId || !currentUserId || deletingConversation) return
-
-    if (typeof window !== 'undefined') {
-      const shouldDelete = window.confirm('Delete this entire chat? This action cannot be undone.')
-      if (!shouldDelete) return
-    }
 
     if (!isSupabaseConfigured) {
       setComposerFeedback('Chat deletion requires Supabase configuration.')

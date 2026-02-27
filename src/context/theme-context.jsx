@@ -17,17 +17,33 @@ function sanitizeTheme(value) {
   return value === THEME_DARK ? THEME_DARK : THEME_LIGHT
 }
 
+function readStoredTheme() {
+  if (typeof window === 'undefined') return ''
+  try {
+    return String(window.localStorage.getItem(STORAGE_KEY) || '')
+  } catch {
+    return ''
+  }
+}
+
+function writeStoredTheme(nextTheme) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(STORAGE_KEY, nextTheme)
+  } catch {
+    // Ignore storage write failures (common in restrictive in-app browsers).
+  }
+}
+
 export function ThemeProvider({ children }) {
   const [theme, setTheme] = useState(() => {
     if (typeof window === 'undefined') return THEME_LIGHT
-    const persistedTheme = window.localStorage.getItem(STORAGE_KEY)
+    const persistedTheme = readStoredTheme()
     return persistedTheme ? sanitizeTheme(persistedTheme) : detectSystemTheme()
   })
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(STORAGE_KEY, theme)
-    }
+    writeStoredTheme(theme)
 
     if (typeof document !== 'undefined') {
       document.documentElement.setAttribute('data-theme', theme)

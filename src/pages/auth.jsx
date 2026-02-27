@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/src/context/auth-context'
 import { validateEmailForAuth } from '@/lib/security/email-policy'
@@ -26,6 +26,34 @@ function buildInternationalPhone(dialCode, localPhone) {
   const normalizedDialCode = String(dialCode || '').trim()
   const localDigits = normalizeLocalPhone(localPhone).replace(/^0+/, '')
   return `${normalizedDialCode}${localDigits}`
+}
+
+function readAuthParam(queryParams, hashParams, key) {
+  return queryParams.get(key) || hashParams.get(key) || ''
+}
+
+function mapAuthErrorMessage(error) {
+  const rawMessage = String(error?.message || error || '').trim()
+  const normalizedMessage = rawMessage.toLowerCase()
+
+  if (
+    normalizedMessage.includes('failed to fetch') ||
+    normalizedMessage.includes('networkerror') ||
+    normalizedMessage.includes('network request failed') ||
+    normalizedMessage.includes('load failed')
+  ) {
+    return 'Cannot reach authentication server. Check your internet or DNS and try again.'
+  }
+
+  if (
+    normalizedMessage.includes('name could not be resolved') ||
+    normalizedMessage.includes('getaddrinfo') ||
+    normalizedMessage.includes('dns')
+  ) {
+    return 'DNS could not resolve the Supabase host. Try switching DNS to 1.1.1.1 or 8.8.8.8.'
+  }
+
+  return rawMessage || 'Authentication failed. Please try again.'
 }
 
 export default function AuthPage() {
@@ -56,11 +84,26 @@ export default function AuthPage() {
     updatePassword,
   } = useAuth()
   const redirectTo = location.state?.from || '/'
-  const isRecoveryMode = useMemo(() => {
-    const query = new URLSearchParams(location.search)
-    const hash = new URLSearchParams(location.hash.replace(/^#/, ''))
-    return query.get('type') === 'recovery' || hash.get('type') === 'recovery'
-  }, [location.hash, location.search])
+  const authQueryParams = useMemo(() => new URLSearchParams(location.search), [location.search])
+  const authHashParams = useMemo(() => new URLSearchParams(location.hash.replace(/^#/, '')), [location.hash])
+  const recoveryType = readAuthParam(authQueryParams, authHashParams, 'type')
+  const hasRecoverySessionParams = Boolean(
+    readAuthParam(authQueryParams, authHashParams, 'access_token') ||
+      readAuthParam(authQueryParams, authHashParams, 'refresh_token') ||
+      readAuthParam(authQueryParams, authHashParams, 'token') ||
+      readAuthParam(authQueryParams, authHashParams, 'token_hash'),
+  )
+  const isRecoveryMode = recoveryType === 'recovery' || hasRecoverySessionParams
+
+  useEffect(() => {
+    const authErrorDescription = readAuthParam(authQueryParams, authHashParams, 'error_description')
+    if (!authErrorDescription) return
+    try {
+      setFeedback(decodeURIComponent(authErrorDescription).replace(/\+/g, ' '))
+    } catch {
+      setFeedback(authErrorDescription)
+    }
+  }, [authHashParams, authQueryParams])
 
   if (isAuthenticated && !isRecoveryMode) {
     return <Navigate to={redirectTo} replace />
@@ -146,7 +189,7 @@ export default function AuthPage() {
 
       if (error) {
         recordAuthAttempt(authAction, false)
-        setFeedback(error.message)
+        setFeedback(mapAuthErrorMessage(error))
         return
       }
 
@@ -167,7 +210,7 @@ export default function AuthPage() {
 
     if (error) {
       recordAuthAttempt(authAction, false)
-      setFeedback(error.message)
+      setFeedback(mapAuthErrorMessage(error))
       return
     }
 
@@ -195,7 +238,7 @@ export default function AuthPage() {
     if (verifyError) {
       setPending(false)
       recordAuthAttempt('verify', false)
-      setFeedback(verifyError.message)
+      setFeedback(mapAuthErrorMessage(verifyError))
       return
     }
 
@@ -230,7 +273,7 @@ export default function AuthPage() {
 
     if (error) {
       recordAuthAttempt('resend', false)
-      setFeedback(error.message)
+      setFeedback(mapAuthErrorMessage(error))
       return
     }
 
@@ -256,7 +299,7 @@ export default function AuthPage() {
     setPending(false)
 
     if (error) {
-      setFeedback(error.message || 'Failed to send password reset email.')
+      setFeedback(mapAuthErrorMessage(error))
       return
     }
 
@@ -282,7 +325,7 @@ export default function AuthPage() {
     setPending(false)
 
     if (error) {
-      setFeedback(error.message || 'Failed to reset password. Open the latest reset email link and try again.')
+      setFeedback(mapAuthErrorMessage(error))
       return
     }
 
@@ -298,6 +341,11 @@ export default function AuthPage() {
         <section className="surface p-5 sm:p-6">
           <h1 className="font-brand text-2xl font-semibold">Reset Password</h1>
           <p className="mt-1 text-sm text-muted">Enter a new password for your account.</p>
+          {!hasRecoverySessionParams ? (
+            <p className="mt-2 text-xs text-muted">
+              This reset link may be incomplete or expired. Request a fresh link from the sign-in form if update fails.
+            </p>
+          ) : null}
 
           <form onSubmit={handleRecoveryPasswordSubmit} className="mt-4 space-y-3">
             <input

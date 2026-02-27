@@ -2,7 +2,6 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-dom'
 import TopBar from '@/components/top-bar'
 import MobileNav from '@/components/mobile-nav'
-import RequireAuth from '@/components/require-auth'
 import RequireAdmin from '@/components/require-admin'
 import { AuthProvider, useAuth } from '@/src/context/auth-context'
 import { I18nProvider, useI18n } from '@/src/context/i18n-context'
@@ -48,22 +47,22 @@ function AdminTopBar() {
 
   return (
     <header className="sticky top-0 z-40 border-b border-line bg-white/95 backdrop-blur">
-      <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between gap-2 px-3 md:px-6">
+      <div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-between gap-2 px-2.5 sm:h-16 sm:px-3 md:px-6">
         <div className="flex items-center gap-2">
-          <Link to="/" className="btn-muted">
+          <Link to="/" className="btn-muted text-xs sm:text-sm">
             Back to site
           </Link>
           <div>
-            <p className="font-brand text-lg font-semibold text-ink">Admin Console</p>
-            <p className="text-xs text-muted">{profileName}</p>
+            <p className="font-brand text-base font-semibold text-ink sm:text-lg">Admin Console</p>
+            <p className="hidden text-xs text-muted sm:block">{profileName}</p>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
-          <Link to={ADMIN_BASE_PATH} className="btn-muted">
+          <Link to={ADMIN_BASE_PATH} className="btn-muted text-xs sm:text-sm">
             Dashboard
           </Link>
-          <Link to={ADMIN_SIGNOUT_PATH} className="btn-muted">
+          <Link to={ADMIN_SIGNOUT_PATH} className="btn-muted text-xs sm:text-sm">
             Sign out
           </Link>
         </div>
@@ -103,7 +102,7 @@ function AppLayout() {
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
       setShowPreloader(false)
-    }, 1100)
+    }, 260)
     return () => window.clearTimeout(timeoutId)
   }, [])
 
@@ -126,47 +125,12 @@ function AppLayout() {
           <Routes>
             <Route path="/" element={<HomePage />} />
             <Route path="/explore" element={<ExplorePage />} />
-            <Route
-              path="/following"
-              element={
-                <RequireAuth>
-                  <FollowingPage />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/saved"
-              element={
-                <RequireAuth>
-                  <SavedPage />
-                </RequireAuth>
-              }
-            />
+            <Route path="/following" element={<FollowingPage />} />
+            <Route path="/saved" element={<SavedPage />} />
             <Route path="/categories" element={<CategoriesPage />} />
-            <Route
-              path="/sell"
-              element={
-                <RequireAuth>
-                  <SellPage />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/messages"
-              element={
-                <RequireAuth>
-                  <MessagesPage />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/notifications"
-              element={
-                <RequireAuth>
-                  <NotificationsPage />
-                </RequireAuth>
-              }
-            />
+            <Route path="/sell" element={<SellPage />} />
+            <Route path="/messages" element={<MessagesPage />} />
+            <Route path="/notifications" element={<NotificationsPage />} />
             <Route path="/safety" element={<SafetyPage />} />
             <Route path="/guidelines" element={<GuidelinesPage />} />
             <Route path="/monetization" element={<MonetizationPage />} />
@@ -193,14 +157,7 @@ function AppLayout() {
               path="/profile/:username"
               element={<ProfilePage />}
             />
-            <Route
-              path="/settings"
-              element={
-                <RequireAuth>
-                  <SettingsPage />
-                </RequireAuth>
-              }
-            />
+            <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </Suspense>

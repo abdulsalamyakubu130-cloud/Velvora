@@ -19,8 +19,10 @@ if ($ProjectRef -match 'https?://' -or $ProjectRef -match 'supabase\.co') {
   throw 'ProjectRef must be your project ref only (for example: abcdefghijklmnopqrst), not a URL.'
 }
 
-if ($AccessToken -notmatch '^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$') {
-  throw 'AccessToken must be a Supabase personal access token JWT from your Supabase account settings, not anon/service_role key.'
+$isJwtPat = $AccessToken -match '^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$'
+$isSbpPat = $AccessToken -match '^sbp_[A-Za-z0-9\-_]+$'
+if (-not ($isJwtPat -or $isSbpPat)) {
+  throw 'AccessToken must be a Supabase personal access token from your Supabase account settings (sbp_... or JWT format), not anon/service_role key.'
 }
 
 $templatePath = Join-Path $PSScriptRoot 'email_templates\confirmation_velvora.html'

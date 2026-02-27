@@ -49,12 +49,26 @@ export function AuthProvider({ children }) {
     }
 
     let mounted = true
-
-    supabase.auth.getSession().then(({ data }) => {
+    const bootstrapTimeoutId = window.setTimeout(() => {
       if (!mounted) return
-      setSession(data.session ?? null)
       setIsLoading(false)
-    })
+    }, 5000)
+
+    async function bootstrapSession() {
+      try {
+        const { data } = await supabase.auth.getSession()
+        if (!mounted) return
+        setSession(data?.session ?? null)
+      } catch {
+        if (!mounted) return
+        setSession(null)
+      } finally {
+        if (!mounted) return
+        setIsLoading(false)
+      }
+    }
+
+    bootstrapSession()
 
     const {
       data: { subscription },
@@ -65,6 +79,7 @@ export function AuthProvider({ children }) {
 
     return () => {
       mounted = false
+      window.clearTimeout(bootstrapTimeoutId)
       subscription.unsubscribe()
     }
   }, [])

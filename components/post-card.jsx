@@ -5,6 +5,7 @@ import { getSupabaseBrowserClient, isSupabaseConfigured } from '@/lib/supabase/c
 import { runWithMissingColumnFallback } from '@/lib/supabase/query-compat'
 import { getProfilePictureValue, resolveProfilePictureUrl } from '@/lib/utils/media-url'
 import { isLocalLiked, isLocalSavedPost, setLocalLike, setLocalSavedPost } from '@/lib/utils/social-cache'
+import ListingImageCarousel from '@/components/listing-image-carousel'
 import { useAuth } from '@/src/context/auth-context'
 import { useI18n } from '@/src/context/i18n-context'
 import VerifiedBadge from '@/components/verified-badge'
@@ -39,8 +40,12 @@ function isMissingTableError(error, tableName) {
   )
 }
 
-function isPlaceholderImage(url) {
-  return String(url || '').startsWith('/placeholders/')
+function formatBoostTier(tier) {
+  const normalized = String(tier || '').toLowerCase()
+  if (normalized === 'premium') return 'Premium'
+  if (normalized === 'standard') return 'Pro'
+  if (normalized === 'starter') return 'Starter'
+  return 'Boost'
 }
 
 export default function PostCard({ post, compact = false }) {
@@ -70,12 +75,6 @@ export default function PostCard({ post, compact = false }) {
   const viewerLocation = resolveViewerLocation(authUser)
   const hasPrice = Number(post.price) > 0
   const verificationTier = normalizeVerificationTier(post.user.verification_tier, post.user.is_verified)
-  const fallbackPostImage = '/placeholders/listing-home.svg'
-  const [imageSrc, setImageSrc] = useState(() => {
-    const remoteImage = post.images?.[0] || ''
-    if (remoteImage && !isPlaceholderImage(remoteImage)) return remoteImage
-    return remoteImage || fallbackPostImage
-  })
   const localCommentsKey = useMemo(() => `velvora:post-comments:${post.id}`, [post.id])
   const authRedirectTarget = `${location.pathname}${location.search}${location.hash}`
   const authCommentIdentity = useMemo(
@@ -107,15 +106,6 @@ export default function PostCard({ post, compact = false }) {
     setIsLiked(Boolean(post.is_liked_by_me) || isLocalLiked(authUser.id, post.id))
     setIsSaved(isLocalSavedPost(authUser.id, post.id))
   }, [authUser?.id, post.comments_count, post.id, post.is_liked_by_me, post.likes_count, post.user.is_following])
-
-  useEffect(() => {
-    const remoteImage = post.images?.[0] || ''
-    if (remoteImage && !isPlaceholderImage(remoteImage)) {
-      setImageSrc(remoteImage)
-      return
-    }
-    setImageSrc(remoteImage || fallbackPostImage)
-  }, [fallbackPostImage, post.id, post.images])
 
   const loadComments = useCallback(async () => {
     if (!post?.id) return
@@ -495,26 +485,24 @@ export default function PostCard({ post, compact = false }) {
 
   return (
     <article className={`surface overflow-hidden animate-rise ${compact ? '' : 'mx-auto w-full max-w-3xl'}`}>
-      <img
-        src={imageSrc}
+      <ListingImageCarousel
+        images={post.images}
         alt={post.title}
-        className={`w-full object-cover ${compact ? 'h-44 sm:h-48' : 'h-64 md:h-80'}`}
-        onError={() => {
-          const alternateImage = (post.images || []).find((candidate) => candidate && candidate !== imageSrc)
-          if (alternateImage) {
-            setImageSrc(alternateImage)
-            return
-          }
-          if (imageSrc !== fallbackPostImage) {
-            setImageSrc(fallbackPostImage)
-          }
-        }}
+        containerClassName="w-full bg-[#f6f7fb]"
+        imageClassName={`w-full object-cover ${compact ? 'h-44 sm:h-48' : 'h-64 md:h-80'}`}
       />
 
       <div className="space-y-2.5 p-3.5">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h3 className="text-base font-semibold text-ink">{post.title}</h3>
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-base font-semibold text-ink">{post.title}</h3>
+              {post.is_boosted ? (
+                <span className="rounded-full bg-[#fff1c2] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#7a5600]">
+                  Sponsored
+                </span>
+              ) : null}
+            </div>
             <p className="text-sm text-muted">
               {post.location} | {timeAgo(post.created_at)}
             </p>
@@ -551,6 +539,7 @@ export default function PostCard({ post, compact = false }) {
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="pill">{post.condition.toUpperCase()}</span>
           <span className="pill">{post.category_name}</span>
+          {post.is_boosted ? <span className="pill">Boosted {formatBoostTier(post.boost_tier)}</span> : null}
           {post.is_negotiable ? <span className="pill">{t('post.negotiable')}</span> : null}
           {!post.is_available ? <span className="pill">{t('post.sold')}</span> : null}
         </div>

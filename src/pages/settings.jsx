@@ -348,11 +348,11 @@ export default function SettingsPage() {
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-muted">Email</p>
-            <p className="text-sm text-ink">{user?.email || user?.user_metadata?.email || 'Not set'}</p>
+            <p className="text-sm font-semibold text-ink">{user?.email || user?.user_metadata?.email || 'Not set'}</p>
           </div>
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-muted">Phone</p>
-            <p className="text-sm text-ink">{user?.phone || 'Not set'}</p>
+            <p className="text-sm font-semibold text-ink">{user?.phone || 'Not set'}</p>
           </div>
         </div>
       </section>

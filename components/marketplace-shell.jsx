@@ -5,7 +5,7 @@ import PostCard from '@/components/post-card'
 import RightRail from '@/components/right-rail'
 import { useI18n } from '@/src/context/i18n-context'
 
-export default function MarketplaceShell({ title, subtitle, posts }) {
+export default function MarketplaceShell({ title, subtitle, posts, loading = false, error = '', onRetry }) {
   const { t } = useI18n()
   const [visibleCount, setVisibleCount] = useState(4)
   const sentinelRef = useRef(null)
@@ -49,22 +49,42 @@ export default function MarketplaceShell({ title, subtitle, posts }) {
           </div>
         </header>
 
-        <div className="space-y-4">
-          {visiblePosts.map((post) => (
-            <PostCard key={post.id} post={post} />
-          ))}
-        </div>
+        {error ? (
+          <section className="surface border border-red-200 bg-red-50 p-4">
+            <p className="text-sm font-medium text-red-700">{error}</p>
+            {onRetry ? (
+              <button
+                type="button"
+                className="btn-muted mt-3"
+                onClick={() => onRetry({ force: true })}
+              >
+                Retry feed
+              </button>
+            ) : null}
+          </section>
+        ) : null}
 
-        {hasMore ? (
+        {loading && !visiblePosts.length ? <p className="text-sm text-muted">Loading marketplace feed...</p> : null}
+        {!loading && !error && !visiblePosts.length ? <p className="text-sm text-muted">No listings available yet.</p> : null}
+
+        {visiblePosts.length ? (
+          <div className="space-y-4">
+            {visiblePosts.map((post) => (
+              <PostCard key={post.id} post={post} />
+            ))}
+          </div>
+        ) : null}
+
+        {visiblePosts.length && hasMore ? (
           <div className="space-y-3">
             <div ref={sentinelRef} className="h-2" aria-hidden="true" />
             <button type="button" onClick={() => setVisibleCount((count) => count + 4)} className="btn-muted w-full">
               {t('market.load_more')}
             </button>
           </div>
-        ) : (
+        ) : visiblePosts.length ? (
           <p className="text-center text-sm text-muted">{t('market.end_feed')}</p>
-        )}
+        ) : null}
       </section>
 
       <RightRail />

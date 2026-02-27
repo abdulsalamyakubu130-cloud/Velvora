@@ -16,6 +16,13 @@ end $$;
 
 do $$
 begin
+  if to_regclass('public.post_boost_orders') is not null then
+    execute 'alter table public.post_boost_orders replica identity full';
+  end if;
+end $$;
+
+do $$
+begin
   begin
     alter publication supabase_realtime add table public.messages;
   exception
@@ -69,5 +76,12 @@ begin
     alter publication supabase_realtime add table public.users;
   exception
     when duplicate_object then null;
+  end;
+
+  begin
+    alter publication supabase_realtime add table public.post_boost_orders;
+  exception
+    when duplicate_object then null;
+    when undefined_table then null;
   end;
 end $$;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   buildProfilePath,
@@ -8,11 +8,13 @@ import {
   normalizeVerificationTier,
   resolveViewerLocation,
 } from '@/lib/utils'
+import { BOOST_PLAN_OPTIONS, formatBoostTierLabel, getBoostPlanById } from '@/lib/monetization/boost-plans'
 import { useAuth } from '@/src/context/auth-context'
 import { getSupabaseBrowserClient, isSupabaseConfigured } from '@/lib/supabase/client'
 import { runWithMissingColumnFallback } from '@/lib/supabase/query-compat'
-import { getProfilePictureValue, resolveListingImageUrl, resolveProfilePictureUrl } from '@/lib/utils/media-url'
+import { extractListingImageUrls, getProfilePictureValue, resolveProfilePictureUrl } from '@/lib/utils/media-url'
 import { useI18n } from '@/src/context/i18n-context'
+import ListingImageCarousel from '@/components/listing-image-carousel'
 import VerifiedBadge from '@/components/verified-badge'
 
 const PROFILE_PICTURE_BUCKET =
@@ -28,6 +30,9 @@ const PROFILE_PICTURE_BUCKET_CANDIDATES = Array.from(
     'profile_pictures',
   ]),
 )
+const BOOST_TRANSFER_BANK_NAME = String(import.meta.env.VITE_BOOST_TRANSFER_BANK_NAME || 'PalmPay').trim()
+const BOOST_TRANSFER_ACCOUNT_NAME = String(import.meta.env.VITE_BOOST_TRANSFER_ACCOUNT_NAME || 'Velvora').trim()
+const BOOST_TRANSFER_ACCOUNT_NUMBER = String(import.meta.env.VITE_BOOST_TRANSFER_ACCOUNT_NUMBER || '').trim()
 const PROFILE_SELECT =
   'id, username, full_name, bio, country, avatar_url, profile_picture_url, is_verified, verification_tier'
 const PROFILE_SELECT_FALLBACK = 'id, username, full_name, bio, country, avatar_url, is_verified, verification_tier'
@@ -113,8 +118,12 @@ export default function ProfilePage() {
   const [relationFeedback, setRelationFeedback] = useState('')
   const [loadingLiveProfile, setLoadingLiveProfile] = useState(false)
   const [selfApprovedTier, setSelfApprovedTier] = useState('none')
+  const [boostingPostId, setBoostingPostId] = useState('')
+  const [selectedBoostPlanId, setSelectedBoostPlanId] = useState(BOOST_PLAN_OPTIONS[0].id)
+  const [boostPending, setBoostPending] = useState(false)
+  const [boostFeedback, setBoostFeedback] = useState('')
   const { username: rawUsername = '' } = useParams()
-  const { user: authUser } = useAuth()
+  const { user: authUser, isLoading: authLoading } = useAuth()
   const { t } = useI18n()
   const username = normalizeProfileHandle(rawUsername)
   const authUsername =
@@ -169,76 +178,113 @@ export default function ProfilePage() {
     if (!authUser?.id) return ''
     return `velvora:local-profile-picture:${authUser.id}`
   }, [authUser?.id])
+  const liveProfileRequestIdRef = useRef(0)
+  const liveUserRef = useRef(liveUser)
+
+  useEffect(() => {
+    liveUserRef.current = liveUser
+  }, [liveUser])
 
   const refreshLiveProfile = useCallback(async () => {
-    if (!username || !isSupabaseConfigured) {
+    const requestId = liveProfileRequestIdRef.current + 1
+    liveProfileRequestIdRef.current = requestId
+
+    const isStaleRequest = () => requestId !== liveProfileRequestIdRef.current
+    const doesLiveUserMatchRoute = () => {
+      const currentLiveUser = liveUserRef.current
+      if (!currentLiveUser || !normalizedRouteHandle) return false
+      const currentId = String(currentLiveUser.id || '').toLowerCase()
+      const currentUsername = normalizeProfileHandle(currentLiveUser.username).toLowerCase()
+      return currentId === normalizedRouteHandle || currentUsername === normalizedRouteHandle
+    }
+    const shouldKeepCurrentProfile = () => {
+      if (doesLiveUserMatchRoute()) return true
+      return Boolean(isMyProfileRoute && authUser?.id)
+    }
+    const clearLiveProfileState = () => {
+      if (isStaleRequest()) return
       setLiveUser(null)
       setLivePosts([])
       setFollowerUsers([])
       setFollowingUsers([])
+    }
+
+    if (!username) {
+      clearLiveProfileState()
+      if (!isStaleRequest()) setLoadingLiveProfile(false)
+      return
+    }
+    if (!isSupabaseConfigured) {
+      if (!shouldKeepCurrentProfile()) {
+        clearLiveProfileState()
+      }
+      if (!isStaleRequest()) setLoadingLiveProfile(false)
       return
     }
 
     const supabase = getSupabaseBrowserClient()
     if (!supabase) {
-      setLiveUser(null)
-      setLivePosts([])
-      setFollowerUsers([])
-      setFollowingUsers([])
+      if (!shouldKeepCurrentProfile()) {
+        clearLiveProfileState()
+      }
+      if (!isStaleRequest()) setLoadingLiveProfile(false)
       return
     }
 
-    setLoadingLiveProfile(true)
-
-    const selectProfilesWithFallback = async (buildQuery) =>
-      runWithMissingColumnFallback(
-        () => buildQuery(PROFILE_SELECT),
-        () => buildQuery(PROFILE_SELECT_FALLBACK),
-      )
-
-    let profileRow = null
-
-    const { data: byUsername } = await selectProfilesWithFallback((selectClause) =>
-      supabase.from('users').select(selectClause).eq('username', username).maybeSingle(),
-    )
-
-    profileRow = byUsername || null
-
-    if (!profileRow && isUuid(username)) {
-      const { data: byIdFromRoute } = await selectProfilesWithFallback((selectClause) =>
-        supabase.from('users').select(selectClause).eq('id', username).maybeSingle(),
-      )
-      profileRow = byIdFromRoute || null
+    if (!isStaleRequest()) {
+      setLoadingLiveProfile(true)
     }
 
-    if (!profileRow) {
-      const escapedQuery = username.replace(/[%_]/g, '').trim()
-      if (escapedQuery) {
-        const [{ data: usernameMatches }, { data: fullNameMatches }] = await Promise.all([
-          selectProfilesWithFallback((selectClause) =>
-            supabase.from('users').select(selectClause).ilike('username', `%${escapedQuery}%`).limit(2),
-          ),
-          selectProfilesWithFallback((selectClause) =>
-            supabase.from('users').select(selectClause).ilike('full_name', `%${escapedQuery}%`).limit(2),
-          ),
-        ])
+    try {
+      const selectProfilesWithFallback = async (buildQuery) =>
+        runWithMissingColumnFallback(
+          () => buildQuery(PROFILE_SELECT),
+          () => buildQuery(PROFILE_SELECT_FALLBACK),
+        )
 
-        if ((usernameMatches || []).length === 1) {
-          profileRow = usernameMatches[0]
-        } else if ((fullNameMatches || []).length === 1) {
-          profileRow = fullNameMatches[0]
+      let profileRow = null
+
+      const { data: byUsername } = await selectProfilesWithFallback((selectClause) =>
+        supabase.from('users').select(selectClause).ilike('username', username).maybeSingle(),
+      )
+
+      profileRow = byUsername || null
+
+      if (!profileRow && isUuid(username)) {
+        const { data: byIdFromRoute } = await selectProfilesWithFallback((selectClause) =>
+          supabase.from('users').select(selectClause).eq('id', username).maybeSingle(),
+        )
+        profileRow = byIdFromRoute || null
+      }
+
+      if (!profileRow) {
+        const escapedQuery = username.replace(/[%_]/g, '').trim()
+        if (escapedQuery) {
+          const [{ data: usernameMatches }, { data: fullNameMatches }] = await Promise.all([
+            selectProfilesWithFallback((selectClause) =>
+              supabase.from('users').select(selectClause).ilike('username', `%${escapedQuery}%`).limit(2),
+            ),
+            selectProfilesWithFallback((selectClause) =>
+              supabase.from('users').select(selectClause).ilike('full_name', `%${escapedQuery}%`).limit(2),
+            ),
+          ])
+
+          if ((usernameMatches || []).length === 1) {
+            profileRow = usernameMatches[0]
+          } else if ((fullNameMatches || []).length === 1) {
+            profileRow = fullNameMatches[0]
+          }
         }
       }
-    }
 
-    if (!profileRow && isMyProfileRoute && authUser?.id) {
-      const { data: byId } = await selectProfilesWithFallback((selectClause) =>
-        supabase.from('users').select(selectClause).eq('id', authUser.id).maybeSingle(),
-      )
-      profileRow = byId || null
-    }
+      if (!profileRow && isMyProfileRoute && authUser?.id) {
+        const { data: byId } = await selectProfilesWithFallback((selectClause) =>
+          supabase.from('users').select(selectClause).eq('id', authUser.id).maybeSingle(),
+        )
+        profileRow = byId || null
+      }
 
-    if (!profileRow && isMyProfileRoute && authUser?.id) {
+      if (!profileRow && isMyProfileRoute && authUser?.id) {
         profileRow = {
           id: authUser.id,
           username: normalizedAuthUsername || `user_${String(authUser.id).slice(0, 8)}`,
@@ -255,60 +301,59 @@ export default function ProfilePage() {
             authUser?.user_metadata?.verification_tier,
             authUser?.user_metadata?.is_verified,
           ),
-      }
-    }
-
-    // Fallback for environments where social rows exist but users row is missing for that account.
-    if (!profileRow && isUuid(username)) {
-      const [{ data: userPostsRows }, { data: userFollowerRows }, { data: userCommentRows }, { data: userLikeRows }] =
-        await Promise.all([
-          supabase.from('posts').select('id').eq('user_id', username).limit(1),
-          supabase.from('followers').select('id').or(`follower_id.eq.${username},following_id.eq.${username}`).limit(1),
-          supabase.from('comments').select('id').eq('user_id', username).limit(1),
-          supabase.from('likes').select('id').eq('user_id', username).limit(1),
-        ])
-
-      const hasAnyActivity =
-        Boolean((userPostsRows || []).length) ||
-        Boolean((userFollowerRows || []).length) ||
-        Boolean((userCommentRows || []).length) ||
-        Boolean((userLikeRows || []).length)
-
-      if (hasAnyActivity) {
-        profileRow = {
-          id: username,
-          username: `user_${String(username).slice(0, 8)}`,
-          full_name: 'Marketplace Seller',
-          bio: '',
-          country: 'Nigeria',
-          avatar_url: '',
-          is_verified: false,
-          verification_tier: 'none',
         }
       }
-    }
 
-    if (!profileRow) {
-      setLiveUser(null)
-      setLivePosts([])
-      setFollowerUsers([])
-      setFollowingUsers([])
-      setLoadingLiveProfile(false)
-      return
-    }
+      // Fallback for environments where social rows exist but users row is missing for that account.
+      if (!profileRow && isUuid(username)) {
+        const [{ data: userPostsRows }, { data: userFollowerRows }, { data: userCommentRows }, { data: userLikeRows }] =
+          await Promise.all([
+            supabase.from('posts').select('id').eq('user_id', username).limit(1),
+            supabase.from('followers').select('id').or(`follower_id.eq.${username},following_id.eq.${username}`).limit(1),
+            supabase.from('comments').select('id').eq('user_id', username).limit(1),
+            supabase.from('likes').select('id').eq('user_id', username).limit(1),
+          ])
 
-    const [
-      { count: followersCount },
-      { count: followingCount },
-      { data: postsRows },
-      { data: approvedKycRow },
-    ] = await Promise.all([
-      supabase.from('followers').select('id', { head: true, count: 'exact' }).eq('following_id', profileRow.id),
-      supabase.from('followers').select('id', { head: true, count: 'exact' }).eq('follower_id', profileRow.id),
-      supabase
-        .from('posts')
-        .select(
-          `
+        const hasAnyActivity =
+          Boolean((userPostsRows || []).length) ||
+          Boolean((userFollowerRows || []).length) ||
+          Boolean((userCommentRows || []).length) ||
+          Boolean((userLikeRows || []).length)
+
+        if (hasAnyActivity) {
+          profileRow = {
+            id: username,
+            username: `user_${String(username).slice(0, 8)}`,
+            full_name: 'Marketplace Seller',
+            bio: '',
+            country: 'Nigeria',
+            avatar_url: '',
+            is_verified: false,
+            verification_tier: 'none',
+          }
+        }
+      }
+
+      if (!profileRow) {
+        if (shouldKeepCurrentProfile()) {
+          return
+        }
+        clearLiveProfileState()
+        return
+      }
+
+      const [
+        { count: followersCount },
+        { count: followingCount },
+        { data: postsRows },
+        { data: approvedKycRow },
+      ] = await Promise.all([
+        supabase.from('followers').select('id', { head: true, count: 'exact' }).eq('following_id', profileRow.id),
+        supabase.from('followers').select('id', { head: true, count: 'exact' }).eq('follower_id', profileRow.id),
+        supabase
+          .from('posts')
+          .select(
+            `
             id,
             user_id,
             title,
@@ -322,129 +367,178 @@ export default function ProfilePage() {
             created_at,
             categories(name)
           `,
-        )
-        .eq('user_id', profileRow.id)
-        .order('created_at', { ascending: false }),
-      isMyProfileRoute && authUser?.id
-        ? supabase
-            .from('kyc_verifications')
-            .select('tier_requested')
-            .eq('user_id', authUser.id)
-            .eq('status', 'approved')
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle()
-        : Promise.resolve({ data: null }),
-    ])
-
-    const followersTotal = Number.isFinite(Number(followersCount)) ? Number(followersCount) : 0
-    const followingTotal = Number.isFinite(Number(followingCount)) ? Number(followingCount) : 0
-
-    let isFollowingRow = null
-    let followsYouRow = null
-    if (authUser?.id && !isMyProfileRoute) {
-      const [{ data: followingData }, { data: followsYouData }] = await Promise.all([
-        supabase
-          .from('followers')
-          .select('id')
-          .eq('follower_id', authUser.id)
-          .eq('following_id', profileRow.id)
-          .limit(1),
-        supabase
-          .from('followers')
-          .select('id')
-          .eq('follower_id', profileRow.id)
-          .eq('following_id', authUser.id)
-          .limit(1),
+          )
+          .eq('user_id', profileRow.id)
+          .order('created_at', { ascending: false }),
+        isMyProfileRoute && authUser?.id
+          ? supabase
+              .from('kyc_verifications')
+              .select('tier_requested')
+              .eq('user_id', authUser.id)
+              .eq('status', 'approved')
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .maybeSingle()
+          : Promise.resolve({ data: null }),
       ])
-      isFollowingRow = followingData?.[0] || null
-      followsYouRow = followsYouData?.[0] || null
-    }
 
-    const rawPosts = postsRows || []
-    const postIds = rawPosts.map((post) => post.id)
+      const followersTotal = Number.isFinite(Number(followersCount)) ? Number(followersCount) : 0
+      const followingTotal = Number.isFinite(Number(followingCount)) ? Number(followingCount) : 0
 
-    const [{ data: imageRows }, { data: likeRows }, { data: commentRows }] = await Promise.all([
-      postIds.length
-        ? supabase.from('post_images').select('post_id, image_url, sort_order').in('post_id', postIds)
-        : Promise.resolve({ data: [] }),
-      postIds.length ? supabase.from('likes').select('post_id').in('post_id', postIds) : Promise.resolve({ data: [] }),
-      postIds.length ? supabase.from('comments').select('post_id').in('post_id', postIds) : Promise.resolve({ data: [] }),
-    ])
-
-    const imagesByPostId = new Map()
-    for (const row of imageRows || []) {
-      if (!imagesByPostId.has(row.post_id)) imagesByPostId.set(row.post_id, [])
-      imagesByPostId.get(row.post_id).push(row)
-    }
-
-    const likesByPostId = {}
-    for (const row of likeRows || []) {
-      likesByPostId[row.post_id] = (likesByPostId[row.post_id] || 0) + 1
-    }
-
-    const commentsByPostId = {}
-    for (const row of commentRows || []) {
-      commentsByPostId[row.post_id] = (commentsByPostId[row.post_id] || 0) + 1
-    }
-
-    const storedTier = normalizeVerificationTier(profileRow.verification_tier, profileRow.is_verified)
-    const approvedTier = normalizeVerificationTier(approvedKycRow?.tier_requested)
-    const effectiveTier = maxVerificationTier(storedTier, approvedTier)
-    const isVerified = effectiveTier !== 'none'
-    const resolvedProfilePicture = resolveProfilePictureUrl(profileRow.profile_picture_url || '', '')
-    const resolvedAvatar = resolveProfilePictureUrl(profileRow.avatar_url || '', '')
-    const fallbackProfilePicture = isMyProfileRoute
-      ? resolveProfilePictureUrl(authUser?.user_metadata?.profile_picture_url || authUser?.user_metadata?.avatar_url || '', '')
-      : ''
-    const finalProfilePicture = resolvedProfilePicture || resolvedAvatar || fallbackProfilePicture
-
-    const nextUser = {
-      ...profileRow,
-      is_verified: isVerified,
-      verification_tier: effectiveTier,
-      country: profileRow.country || 'Nigeria',
-      profile_picture_url: finalProfilePicture,
-      avatar_url: resolvedAvatar || finalProfilePicture,
-      followers: followersTotal,
-      following: followingTotal,
-      is_following: Boolean(isFollowingRow),
-      follows_you: Boolean(followsYouRow),
-      accepts_message_requests: false,
-    }
-
-    const nextPosts = rawPosts.map((post) => {
-      const sortedImages = [...(imagesByPostId.get(post.id) || [])].sort((a, b) => a.sort_order - b.sort_order)
-      const imageUrls = sortedImages.map((row) => resolveListingImageUrl(row.image_url || '', '')).filter(Boolean)
-      const categoryName = Array.isArray(post.categories)
-        ? post.categories[0]?.name || 'General'
-        : post.categories?.name || 'General'
-      return {
-        id: post.id,
-        user_id: post.user_id,
-        title: post.title,
-        description: post.description || '',
-        price: Number(post.price || 0),
-        category_id: post.category_id,
-        category_name: categoryName,
-        condition: post.condition || 'used',
-        location: post.location || '',
-        is_available: Boolean(post.is_available),
-        is_negotiable: Boolean(post.is_negotiable),
-        created_at: post.created_at,
-        likes_count: likesByPostId[post.id] || 0,
-        comments_count: commentsByPostId[post.id] || 0,
-        images: imageUrls.length ? imageUrls : ['/placeholders/listing-home.svg'],
-        user: nextUser,
+      let isFollowingRow = null
+      let followsYouRow = null
+      if (authUser?.id && !isMyProfileRoute) {
+        const [{ data: followingData }, { data: followsYouData }] = await Promise.all([
+          supabase
+            .from('followers')
+            .select('id')
+            .eq('follower_id', authUser.id)
+            .eq('following_id', profileRow.id)
+            .limit(1),
+          supabase
+            .from('followers')
+            .select('id')
+            .eq('follower_id', profileRow.id)
+            .eq('following_id', authUser.id)
+            .limit(1),
+        ])
+        isFollowingRow = followingData?.[0] || null
+        followsYouRow = followsYouData?.[0] || null
       }
-    })
 
-    setLiveUser(nextUser)
-    setLivePosts(nextPosts)
-    setIsFollowing(Boolean(nextUser.is_following))
-    setTargetUserId(!isMyProfileRoute ? profileRow.id : '')
-    setLoadingLiveProfile(false)
-  }, [authUser?.id, authUser?.user_metadata, isMyProfileRoute, normalizedAuthUsername, username])
+      const rawPosts = postsRows || []
+      const postIds = rawPosts.map((post) => post.id)
+
+      const [{ data: imageRows }, { data: likeRows }, { data: commentRows }, { data: boostRows, error: boostRowsError }] = await Promise.all([
+        postIds.length
+          ? supabase.from('post_images').select('post_id, image_url, sort_order').in('post_id', postIds)
+          : Promise.resolve({ data: [] }),
+        postIds.length ? supabase.from('likes').select('post_id').in('post_id', postIds) : Promise.resolve({ data: [] }),
+        postIds.length ? supabase.from('comments').select('post_id').in('post_id', postIds) : Promise.resolve({ data: [] }),
+        postIds.length
+          ? supabase
+              .from('post_boost_orders')
+              .select('post_id, plan_id, boost_tier, status, starts_at, ends_at, created_at')
+              .in('post_id', postIds)
+              .order('created_at', { ascending: false })
+          : Promise.resolve({ data: [] }),
+      ])
+
+      const imagesByPostId = new Map()
+      for (const row of imageRows || []) {
+        if (!imagesByPostId.has(row.post_id)) imagesByPostId.set(row.post_id, [])
+        imagesByPostId.get(row.post_id).push(row)
+      }
+
+      const likesByPostId = {}
+      for (const row of likeRows || []) {
+        likesByPostId[row.post_id] = (likesByPostId[row.post_id] || 0) + 1
+      }
+
+      const commentsByPostId = {}
+      for (const row of commentRows || []) {
+        commentsByPostId[row.post_id] = (commentsByPostId[row.post_id] || 0) + 1
+      }
+
+      const boostsByPostId = new Map()
+      if (!boostRowsError || !isMissingTableError(boostRowsError, 'post_boost_orders')) {
+        for (const row of boostRows || []) {
+          if (!row?.post_id || boostsByPostId.has(row.post_id)) continue
+          const endsAtUnix = new Date(row.ends_at || 0).getTime()
+          const hasEnded = Number.isFinite(endsAtUnix) && endsAtUnix > 0 && endsAtUnix <= Date.now()
+          const normalizedStatus =
+            row.status === 'active' && hasEnded
+              ? 'expired'
+              : row.status === 'pending' || row.status === 'active' || row.status === 'rejected' || row.status === 'expired'
+                ? row.status
+                : 'none'
+          boostsByPostId.set(row.post_id, {
+            plan_id: row.plan_id || '',
+            boost_tier: row.boost_tier || '',
+            status: normalizedStatus,
+            starts_at: row.starts_at || null,
+            ends_at: row.ends_at || null,
+          })
+        }
+      }
+
+      const storedTier = normalizeVerificationTier(profileRow.verification_tier, profileRow.is_verified)
+      const approvedTier = normalizeVerificationTier(approvedKycRow?.tier_requested)
+      const effectiveTier = maxVerificationTier(storedTier, approvedTier)
+      const isVerified = effectiveTier !== 'none'
+      const resolvedProfilePicture = resolveProfilePictureUrl(profileRow.profile_picture_url || '', '')
+      const resolvedAvatar = resolveProfilePictureUrl(profileRow.avatar_url || '', '')
+      const fallbackProfilePicture = isMyProfileRoute
+        ? resolveProfilePictureUrl(authUser?.user_metadata?.profile_picture_url || authUser?.user_metadata?.avatar_url || '', '')
+        : ''
+      const finalProfilePicture = resolvedProfilePicture || resolvedAvatar || fallbackProfilePicture
+
+      const nextUser = {
+        ...profileRow,
+        is_verified: isVerified,
+        verification_tier: effectiveTier,
+        country: profileRow.country || 'Nigeria',
+        profile_picture_url: finalProfilePicture,
+        avatar_url: resolvedAvatar || finalProfilePicture,
+        followers: followersTotal,
+        following: followingTotal,
+        is_following: Boolean(isFollowingRow),
+        follows_you: Boolean(followsYouRow),
+        accepts_message_requests: false,
+      }
+
+      const nextPosts = rawPosts.map((post) => {
+        const sortedImages = [...(imagesByPostId.get(post.id) || [])].sort((a, b) => a.sort_order - b.sort_order)
+        const imageUrls = []
+        for (const row of sortedImages) {
+          imageUrls.push(...extractListingImageUrls(row.image_url, []))
+        }
+        const uniqueImageUrls = Array.from(new Set(imageUrls))
+        const boostMeta = boostsByPostId.get(post.id)
+        const categoryName = Array.isArray(post.categories)
+          ? post.categories[0]?.name || 'General'
+          : post.categories?.name || 'General'
+        return {
+          id: post.id,
+          user_id: post.user_id,
+          title: post.title,
+          description: post.description || '',
+          price: Number(post.price || 0),
+          category_id: post.category_id,
+          category_name: categoryName,
+          condition: post.condition || 'used',
+          location: post.location || '',
+          is_available: Boolean(post.is_available),
+          is_negotiable: Boolean(post.is_negotiable),
+          created_at: post.created_at,
+          likes_count: likesByPostId[post.id] || 0,
+          comments_count: commentsByPostId[post.id] || 0,
+          is_boosted: boostMeta?.status === 'active',
+          boost_status: boostMeta?.status || 'none',
+          boost_tier: boostMeta?.boost_tier || '',
+          boost_plan_id: boostMeta?.plan_id || '',
+          boost_starts_at: boostMeta?.starts_at || null,
+          boost_ends_at: boostMeta?.ends_at || null,
+          images: uniqueImageUrls.length ? uniqueImageUrls : ['/placeholders/listing-home.svg'],
+          user: nextUser,
+        }
+      })
+
+      if (isStaleRequest()) return
+
+      setLiveUser(nextUser)
+      setLivePosts(nextPosts)
+      setIsFollowing(Boolean(nextUser.is_following))
+      setTargetUserId(!isMyProfileRoute ? profileRow.id : '')
+    } catch (error) {
+      if (isStaleRequest()) return
+      // Keep the last good profile state visible if a refresh fails.
+      console.error('Failed to refresh profile data.', error)
+    } finally {
+      if (isStaleRequest()) return
+      setLoadingLiveProfile(false)
+    }
+  }, [authUser?.id, authUser?.user_metadata, isMyProfileRoute, normalizedAuthUsername, normalizedRouteHandle, username])
 
   useEffect(() => {
     refreshLiveProfile()
@@ -458,6 +552,11 @@ export default function ProfilePage() {
     const channel = supabase
       .channel(`profile-live:${user.id}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'posts', filter: `user_id=eq.${user.id}` }, refreshLiveProfile)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'post_boost_orders', filter: `user_id=eq.${user.id}` },
+        refreshLiveProfile,
+      )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'followers', filter: `following_id=eq.${user.id}` },
@@ -555,6 +654,10 @@ export default function ProfilePage() {
     setFollowerUsers([])
     setFollowingUsers([])
     setRelationUsersLoading(false)
+    setBoostingPostId('')
+    setSelectedBoostPlanId(BOOST_PLAN_OPTIONS[0].id)
+    setBoostPending(false)
+    setBoostFeedback('')
   }, [username])
 
   const blockStorageKey = useMemo(() => {
@@ -748,7 +851,7 @@ export default function ProfilePage() {
     }
   }, [isMyProfileRoute, authUser?.id, targetUserId])
 
-  if (loadingLiveProfile && !user) {
+  if ((authLoading || loadingLiveProfile) && !user) {
     return (
       <section className="surface mx-auto w-full max-w-xl p-6 text-center">
         <h1 className="font-brand text-2xl font-semibold">Loading profile...</h1>
@@ -795,6 +898,8 @@ export default function ProfilePage() {
   ]
   const relationUsers = activeRelationList === 'followers' ? followerUsers : followingUsers
   const relationListTitle = activeRelationList === 'followers' ? 'Followers' : 'Following'
+  const selectedBoostPost = userPosts.find((post) => post.id === boostingPostId) || null
+  const selectedBoostPlan = getBoostPlanById(selectedBoostPlanId) || BOOST_PLAN_OPTIONS[0]
 
   async function handleMessageRequest() {
     if (isOwnProfile || isBlocked) return
@@ -1012,6 +1117,122 @@ export default function ProfilePage() {
     if (isOpening) {
       loadRelationUsers(listType)
     }
+  }
+
+  function handleOpenBoostDialog(post) {
+    if (!isOwnProfile || !post?.id || !post.is_available) return
+    setBoostFeedback('')
+    setSelectedBoostPlanId(BOOST_PLAN_OPTIONS[0].id)
+    setBoostingPostId(post.id)
+  }
+
+  function handleCloseBoostDialog() {
+    if (boostPending) return
+    setBoostingPostId('')
+    setSelectedBoostPlanId(BOOST_PLAN_OPTIONS[0].id)
+  }
+
+  async function handleSubmitBoostOrder(event) {
+    event.preventDefault()
+
+    if (!isOwnProfile || !selectedBoostPost?.id) {
+      setBoostFeedback('Select one of your posts first.')
+      return
+    }
+
+    if (!selectedBoostPost.is_available) {
+      setBoostFeedback('Only available posts can be boosted.')
+      return
+    }
+
+    if (!isSupabaseConfigured || !authUser?.id) {
+      setBoostFeedback('Boost orders require Supabase setup and a signed-in seller account.')
+      return
+    }
+
+    const supabase = getSupabaseBrowserClient()
+    if (!supabase) {
+      setBoostFeedback('Unable to connect to Supabase right now.')
+      return
+    }
+
+    const plan = getBoostPlanById(selectedBoostPlanId)
+    if (!plan) {
+      setBoostFeedback('Please choose a valid boost plan.')
+      return
+    }
+
+    setBoostPending(true)
+    setBoostFeedback('')
+
+    const { data: existingOrderRows, error: existingOrderError } = await supabase
+      .from('post_boost_orders')
+      .select('id, status, ends_at')
+      .eq('post_id', selectedBoostPost.id)
+      .eq('user_id', authUser.id)
+      .in('status', ['pending', 'active'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+
+    if (existingOrderError && !isMissingTableError(existingOrderError, 'post_boost_orders')) {
+      setBoostPending(false)
+      setBoostFeedback(existingOrderError.message || 'Failed to check existing boost orders.')
+      return
+    }
+
+    const existingOrder = existingOrderRows?.[0]
+    if (existingOrder?.status === 'pending') {
+      setBoostPending(false)
+      setBoostFeedback('You already have a pending boost payment for this post. Wait for admin approval.')
+      return
+    }
+
+    if (existingOrder?.status === 'active') {
+      const endsAtUnix = new Date(existingOrder.ends_at || 0).getTime()
+      if (!Number.isNaN(endsAtUnix) && endsAtUnix > Date.now()) {
+        setBoostPending(false)
+        setBoostFeedback('This post already has an active boost.')
+        return
+      }
+    }
+
+    const referenceSuffix = Math.random().toString(36).slice(2, 8).toUpperCase()
+    const paymentReference = `VELVORA-BOOST-${Date.now()}-${referenceSuffix}`
+
+    const { data: createdOrder, error: createOrderError } = await supabase
+      .from('post_boost_orders')
+      .insert({
+        user_id: authUser.id,
+        post_id: selectedBoostPost.id,
+        plan_id: plan.id,
+        boost_tier: plan.tier,
+        amount_ngn: plan.amountNgn,
+        duration_days: plan.durationDays,
+        payment_reference: paymentReference,
+        status: 'pending',
+      })
+      .select('id, payment_reference')
+      .maybeSingle()
+
+    setBoostPending(false)
+
+    if (createOrderError) {
+      setBoostFeedback(
+        isMissingTableError(createOrderError, 'post_boost_orders')
+          ? 'Boosts are not enabled yet. Run supabase/post_boosts.sql in Supabase SQL Editor, then refresh.'
+          : createOrderError.message || 'Failed to create boost order.',
+      )
+      return
+    }
+
+    setBoostFeedback(
+      `Boost request created. Reference: ${
+        createdOrder?.payment_reference || paymentReference
+      }. Make transfer to the account shown above, then approve this order in Admin Panel after payment arrives.`,
+    )
+    setBoostingPostId('')
+    setSelectedBoostPlanId(BOOST_PLAN_OPTIONS[0].id)
+    refreshLiveProfile()
   }
 
   function handleStartEditPost(post) {
@@ -1733,24 +1954,21 @@ export default function ProfilePage() {
         <div className="grid gap-4 sm:grid-cols-2">
           {filteredPosts.map((post) => (
             <article key={post.id} className="overflow-hidden rounded-2xl border border-line bg-white">
-              <img
-                src={post.images[0] || '/placeholders/listing-home.svg'}
+              <ListingImageCarousel
+                images={post.images}
                 alt={post.title}
-                className="h-44 w-full object-cover"
-                onError={(event) => {
-                  const alternateImage = (post.images || []).find(
-                    (candidate) => candidate && candidate !== event.currentTarget.currentSrc && candidate !== event.currentTarget.src,
-                  )
-                  if (alternateImage) {
-                    event.currentTarget.src = alternateImage
-                    return
-                  }
-                  event.currentTarget.src = '/placeholders/listing-home.svg'
-                }}
+                imageClassName="h-44 w-full object-cover"
               />
               <div className="space-y-2 p-3">
                 <p className="font-semibold text-ink">{post.title}</p>
                 <p className="text-sm text-muted">{post.location}</p>
+                {post.boost_status === 'active' ? (
+                  <p className="text-xs font-semibold text-[#7a5600]">
+                    {formatBoostTierLabel(post.boost_tier)} boost active until {formatDateTime(post.boost_ends_at)}
+                  </p>
+                ) : post.boost_status === 'pending' ? (
+                  <p className="text-xs font-semibold text-muted">Boost payment pending admin approval.</p>
+                ) : null}
                 <div className="flex items-center justify-between">
                   <span className="pill">{post.condition.toUpperCase()}</span>
                   <span className="text-sm font-semibold text-accentStrong">
@@ -1758,7 +1976,7 @@ export default function ProfilePage() {
                   </span>
                 </div>
                 {isOwnProfile ? (
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                     <button
                       type="button"
                       className="btn-muted w-full"
@@ -1780,6 +1998,23 @@ export default function ProfilePage() {
                     >
                       {deletePendingPostId === post.id ? 'Deleting...' : 'Delete post'}
                     </button>
+                    <button
+                      type="button"
+                      className="btn-muted w-full"
+                      onClick={() => handleOpenBoostDialog(post)}
+                      disabled={
+                        boostPending ||
+                        !post.is_available ||
+                        post.boost_status === 'pending' ||
+                        post.boost_status === 'active'
+                      }
+                    >
+                      {post.boost_status === 'active'
+                        ? 'Boost active'
+                        : post.boost_status === 'pending'
+                          ? 'Boost pending'
+                          : 'Boost post'}
+                    </button>
                   </div>
                 ) : null}
               </div>
@@ -1789,8 +2024,87 @@ export default function ProfilePage() {
 
         {editFeedback ? <p className="mt-4 text-sm text-muted">{editFeedback}</p> : null}
         {deleteFeedback ? <p className="mt-1 text-sm text-muted">{deleteFeedback}</p> : null}
+        {boostFeedback ? <p className="mt-1 text-sm text-muted">{boostFeedback}</p> : null}
         {!filteredPosts.length ? <p className="mt-4 text-sm text-muted">No posts in this status yet.</p> : null}
       </section>
+
+      {isOwnProfile && boostingPostId && selectedBoostPost ? (
+        <section className="surface p-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-ink">Boost "{selectedBoostPost.title}"</h2>
+              <p className="mt-1 text-sm text-muted">
+                Choose a plan to promote this listing on Home and Explore.
+              </p>
+            </div>
+            <button type="button" className="btn-muted" onClick={handleCloseBoostDialog} disabled={boostPending}>
+              Close
+            </button>
+          </div>
+
+          <form onSubmit={handleSubmitBoostOrder} className="mt-4 space-y-3">
+            {BOOST_PLAN_OPTIONS.map((plan) => (
+              <label
+                key={plan.id}
+                className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition ${
+                  selectedBoostPlanId === plan.id ? 'border-accent bg-accentSoft/60' : 'border-line bg-white'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="boost-plan"
+                  value={plan.id}
+                  checked={selectedBoostPlanId === plan.id}
+                  onChange={(event) => setSelectedBoostPlanId(event.target.value)}
+                  disabled={boostPending}
+                />
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-ink">
+                    {plan.label} | N{plan.amountNgn.toLocaleString()} | {plan.durationDays} days
+                  </p>
+                  <p className="text-xs text-muted">{plan.description}</p>
+                </div>
+              </label>
+            ))}
+
+            {BOOST_TRANSFER_ACCOUNT_NUMBER ? (
+              <div className="rounded-xl border border-line bg-white p-3 text-xs text-muted">
+                <p className="text-sm font-semibold text-ink">Manual transfer payment details</p>
+                <p className="mt-1 font-semibold text-ink">Bank: {BOOST_TRANSFER_BANK_NAME}</p>
+                <p className="font-semibold text-ink">Account name: {BOOST_TRANSFER_ACCOUNT_NAME}</p>
+                <p className="font-semibold text-ink">Account number: {BOOST_TRANSFER_ACCOUNT_NUMBER}</p>
+                <p className="mt-2">
+                  Step 1: Create order.
+                  <br />
+                  Step 2: Transfer exact amount.
+                  <br />
+                  Step 3: Use the generated boost reference as transfer narration.
+                  <br />
+                  Step 4: Admin confirms transfer and activates your boost.
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-line bg-white p-3 text-xs text-muted">
+                Set `VITE_BOOST_TRANSFER_BANK_NAME`, `VITE_BOOST_TRANSFER_ACCOUNT_NAME`, and
+                `VITE_BOOST_TRANSFER_ACCOUNT_NUMBER` to show your payment account here.
+              </div>
+            )}
+
+            <div className="rounded-xl border border-line bg-white p-3 text-xs text-muted">
+              Orders start as pending. After payment confirmation, approve from Admin Panel to activate the boost.
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="submit" className="btn-primary" disabled={boostPending}>
+                {boostPending ? 'Creating order...' : `Create order (N${selectedBoostPlan.amountNgn.toLocaleString()})`}
+              </button>
+              <button type="button" className="btn-muted" onClick={handleCloseBoostDialog} disabled={boostPending}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        </section>
+      ) : null}
 
       {isOwnProfile && editingPostId ? (
         <section className="surface p-5">

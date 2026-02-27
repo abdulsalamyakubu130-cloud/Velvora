@@ -338,16 +338,31 @@ function sanitizeLanguage(code) {
   return FALLBACK_LANGUAGE
 }
 
+function readStoredLanguage() {
+  if (typeof window === 'undefined') return FALLBACK_LANGUAGE
+  try {
+    return sanitizeLanguage(window.localStorage.getItem(STORAGE_KEY) || FALLBACK_LANGUAGE)
+  } catch {
+    return FALLBACK_LANGUAGE
+  }
+}
+
+function writeStoredLanguage(nextLanguage) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(STORAGE_KEY, nextLanguage)
+  } catch {
+    // Ignore storage write failures (common in in-app browsers).
+  }
+}
+
 export function I18nProvider({ children }) {
   const [language, setLanguage] = useState(() => {
-    if (typeof window === 'undefined') return FALLBACK_LANGUAGE
-    return sanitizeLanguage(window.localStorage.getItem(STORAGE_KEY) || FALLBACK_LANGUAGE)
+    return readStoredLanguage()
   })
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(STORAGE_KEY, language)
-    }
+    writeStoredLanguage(language)
 
     if (typeof document !== 'undefined') {
       document.documentElement.lang = language

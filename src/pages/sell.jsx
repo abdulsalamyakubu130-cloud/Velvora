@@ -22,6 +22,43 @@ const formDefaults = {
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
+function normalizeCategorySlug(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^cat-/, '')
+    .replace(/&/g, ' and ')
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
+function buildFallbackCategoryOptions() {
+  return marketplaceCategories.map((category) => ({
+    id: category.id,
+    slug: normalizeCategorySlug(category.id || category.name),
+    name: category.name,
+  }))
+}
+
+function mergeCategoryOptions(remoteRows = []) {
+  const fallbackRows = buildFallbackCategoryOptions()
+  const bySlug = new Map(fallbackRows.map((row) => [row.slug, row]))
+
+  for (const row of remoteRows) {
+    const slug = normalizeCategorySlug(row?.slug || row?.name || row?.id)
+    if (!slug) continue
+    bySlug.set(slug, {
+      id: row?.id || `cat-${slug}`,
+      slug,
+      name: String(row?.name || slug.replace(/-/g, ' ')).trim(),
+    })
+  }
+
+  return Array.from(bySlug.values()).sort((left, right) => left.name.localeCompare(right.name))
+}
+
 function isMissingTableError(error, tableName) {
   const message = String(error?.message || '').toLowerCase()
   return (
@@ -82,13 +119,7 @@ export default function SellPage() {
   const [files, setFiles] = useState([])
   const [feedback, setFeedback] = useState('')
   const [pending, setPending] = useState(false)
-  const [categoryOptions, setCategoryOptions] = useState(
-    marketplaceCategories.map((category) => ({
-      id: category.id,
-      slug: String(category.id || '').replace(/^cat-/, ''),
-      name: category.name,
-    })),
-  )
+  const [categoryOptions, setCategoryOptions] = useState(() => buildFallbackCategoryOptions())
   const [sellerTier, setSellerTier] = useState('none')
   const [activeListingCount, setActiveListingCount] = useState(0)
 
@@ -108,8 +139,8 @@ export default function SellPage() {
       if (!supabase) return
 
       const { data, error } = await supabase.from('categories').select('id, slug, name').order('name', { ascending: true })
-      if (error || !data?.length) return
-      setCategoryOptions(data)
+      if (error) return
+      setCategoryOptions(mergeCategoryOptions(data || []))
     }
 
     loadCategories()
@@ -190,14 +221,19 @@ export default function SellPage() {
     let resolvedCategoryId = formData.category_id || null
     if (resolvedCategoryId && !uuidPattern.test(resolvedCategoryId)) {
       const selectedCategory = categoryOptions.find((category) => category.id === resolvedCategoryId)
-      const categorySlug = selectedCategory?.slug || String(resolvedCategoryId).replace(/^cat-/, '')
+      const categorySlug = normalizeCategorySlug(selectedCategory?.slug || selectedCategory?.name || resolvedCategoryId)
       const { data: categoryRow, error: categoryError } = await supabase
         .from('categories')
         .select('id')
         .eq('slug', categorySlug)
         .maybeSingle()
 
-      resolvedCategoryId = !categoryError && categoryRow?.id ? categoryRow.id : null
+      if (categoryError || !categoryRow?.id) {
+        setFeedback('Selected category is not in your database yet. Run supabase/seed.sql, then publish again.')
+        return
+      }
+
+      resolvedCategoryId = categoryRow.id
     }
 
     setPending(true)
@@ -268,22 +304,25 @@ export default function SellPage() {
       }
 
       if (uploadedImages.length) {
-        const imagesToInsert = localBackupImage
-          ? [
-              ...uploadedImages,
-              {
-                post_id: createdPost.id,
-                image_url: localBackupImage,
-                sort_order: 1000,
-              },
-            ]
-          : uploadedImages
+        let missingPostImagesTable = false
+        for (const row of uploadedImages) {
+          const { error: imageInsertError } = await supabase.from('post_images').insert(row)
+          if (!imageInsertError) {
+            storedImageCount += 1
+            continue
+          }
 
-        const { error: imageInsertError } = await supabase.from('post_images').insert(imagesToInsert)
+          if (isMissingTableError(imageInsertError, 'post_images')) {
+            missingPostImagesTable = true
+            break
+          }
 
-        if (!imageInsertError) {
-          storedImageCount = uploadedImages.length
-        } else if (isMissingTableError(imageInsertError, 'post_images')) {
+          if (!imageInsertFailureMessage) {
+            imageInsertFailureMessage = imageInsertError.message || 'Image metadata save failed.'
+          }
+        }
+
+        if (missingPostImagesTable) {
           try {
             const localImage = localBackupImage || (await readFileAsDataUrl(files[0]))
             persistLocalPostImage(createdPost.id, localImage)
@@ -291,53 +330,34 @@ export default function SellPage() {
           } catch {
             // Fall through to generic feedback.
           }
-        } else {
-          try {
-            const inlineImage = localBackupImage || (await readFileAsOptimizedDataUrl(files[0]))
-            const { error: inlineInsertError } = await supabase.from('post_images').insert({
-              post_id: createdPost.id,
-              image_url: inlineImage,
-              sort_order: 0,
-            })
-            if (!inlineInsertError) {
-              storedImageCount = 1
-            } else {
-              imageInsertFailureMessage = inlineInsertError.message || 'Image metadata save failed.'
-            }
-          } catch {
-            imageInsertFailureMessage = imageInsertError.message || 'Image metadata save failed.'
-          }
         }
       } else {
         try {
-          const inlineImage = await readFileAsOptimizedDataUrl(files[0])
-          const { error: inlineInsertError } = await supabase.from('post_images').insert({
-            post_id: createdPost.id,
-            image_url: inlineImage,
-            sort_order: 0,
-          })
-
-          if (!inlineInsertError) {
-            storedImageCount = 1
-          } else if (isMissingTableError(inlineInsertError, 'post_images')) {
-            persistLocalPostImage(createdPost.id, inlineImage)
-            savedImageLocally = true
-          } else {
-            persistLocalPostImage(createdPost.id, inlineImage)
-            savedImageLocally = true
-          }
+          const inlineImage = localBackupImage || (await readFileAsOptimizedDataUrl(files[0]))
+          persistLocalPostImage(createdPost.id, inlineImage)
+          savedImageLocally = true
         } catch {
           // Ignore local fallback failures.
         }
       }
     }
 
-    if (storedImageCount > 0) {
+    const failedImageCount = files.length ? Math.max(0, files.length - storedImageCount) : 0
+
+    if (storedImageCount > 0 && failedImageCount > 0) {
+      setFeedback(
+        `Listing published with ${storedImageCount}/${files.length} images. ${failedImageCount} image(s) failed to sync.`,
+      )
+    } else if (storedImageCount > 0) {
       setFeedback('Listing published successfully with images.')
-    } else if (imageInsertFailureMessage) {
-      setFeedback(`Listing published, but images failed to sync across devices: ${imageInsertFailureMessage}`)
+    } else if (files.length > 0 && imageInsertFailureMessage) {
+      setFeedback(
+        `Listing published, but image metadata failed to sync: ${imageInsertFailureMessage}`,
+      )
     } else if (savedImageLocally) {
       setFeedback('Listing published. Image saved locally on this device because storage/database setup is incomplete.')
+    } else if (files.length > 0) {
+      setFeedback('Listing published, but images could not be uploaded. Check Supabase storage bucket and policies.')
     } else {
       setFeedback('Listing published successfully.')
     }
