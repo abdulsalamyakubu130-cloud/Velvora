@@ -10,7 +10,7 @@ function buildLastMessagePreview(message) {
   if (!message) return 'No messages yet.'
   const content = String(message.content || '').trim()
   if (content) return content
-  if (message.image_url) return 'Image'
+  if (message.image_url) return isAudioMediaUrl(message.image_url) ? 'Voice note' : 'Image'
   return 'No messages yet.'
 }
 
@@ -21,6 +21,20 @@ function formatMessageTime(value) {
     hour: 'numeric',
     minute: '2-digit',
   }).format(date)
+}
+
+function isAudioMediaUrl(url) {
+  const normalized = String(url || '').trim().toLowerCase()
+  if (!normalized) return false
+  if (normalized.startsWith('data:audio/')) return true
+  return /(\.mp3|\.wav|\.ogg|\.oga|\.webm|\.m4a|\.aac|\.flac)(\?|#|$)/.test(normalized)
+}
+
+function formatVoiceDuration(seconds) {
+  const totalSeconds = Math.max(0, Number(seconds) || 0)
+  const minutes = Math.floor(totalSeconds / 60)
+  const remainder = totalSeconds % 60
+  return `${minutes}:${String(remainder).padStart(2, '0')}`
 }
 
 function isMissingTableError(error, tableName) {
@@ -39,6 +53,8 @@ function isMissingFunctionError(error, functionName) {
 }
 
 export default function MessagesPage() {
+  const MAX_VOICE_NOTE_SECONDS = 60
+  const MAX_VOICE_NOTE_BYTES = 2 * 1024 * 1024
   const location = useLocation()
   const { user: authUser } = useAuth()
   const [showMobileThread, setShowMobileThread] = useState(false)
@@ -58,11 +74,20 @@ export default function MessagesPage() {
   const [deletingConversation, setDeletingConversation] = useState(false)
   const [requestActionPending, setRequestActionPending] = useState(false)
   const [openedConversationNonce, setOpenedConversationNonce] = useState(0)
+  const [recordingVoice, setRecordingVoice] = useState(false)
+  const [recordingSeconds, setRecordingSeconds] = useState(0)
+  const [dismissedSafetyPopup, setDismissedSafetyPopup] = useState(false)
   const typingTimeoutRef = useRef(null)
   const partnerTypingTimeoutRef = useRef(null)
   const openedConversationsRef = useRef(new Set())
   const channelRef = useRef(null)
   const messagesViewportRef = useRef(null)
+  const mediaRecorderRef = useRef(null)
+  const recordingStreamRef = useRef(null)
+  const recordingChunksRef = useRef([])
+  const recordingTimerRef = useRef(null)
+  const recordingSecondsRef = useRef(0)
+  const discardVoiceOnStopRef = useRef(false)
 
   resolveViewerLocation(authUser)
   const currentUserId = String(authUser?.id || '')
@@ -86,6 +111,9 @@ export default function MessagesPage() {
   const activeViewerIsTarget = activeConversation?.target_user_id === currentUserId
   const isRequestBlockedForViewer = activeViewerIsRequester && (activeRequestStatus === 'pending' || activeRequestStatus === 'rejected')
   const canMessage = Boolean(currentUserId && activeConversationId && !isRequestBlockedForViewer)
+  const showSafetyPopup = Boolean(
+    activeConversationId && !dismissedSafetyPopup && !loadingMessages && messages.length <= 2,
+  )
   const composerPlaceholder =
     !activeConversation
       ? 'Select a conversation'
@@ -141,6 +169,31 @@ export default function MessagesPage() {
       setHiddenMessageIds([])
     }
   }, [hiddenMessagesStorageKey])
+
+  useEffect(() => {
+    setDismissedSafetyPopup(false)
+  }, [activeConversationId])
+
+  useEffect(
+    () => () => {
+      discardVoiceOnStopRef.current = true
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current)
+        recordingTimerRef.current = null
+      }
+      const recorder = mediaRecorderRef.current
+      if (recorder && recorder.state !== 'inactive') {
+        try {
+          recorder.stop()
+        } catch {
+          stopRecordingStream()
+        }
+      } else {
+        stopRecordingStream()
+      }
+    },
+    [],
+  )
 
   const markConversationNotificationsRead = useCallback(async (conversationId) => {
     if (!conversationId || !currentUserId || !isSupabaseConfigured) return
@@ -522,12 +575,26 @@ export default function MessagesPage() {
   }, [currentUserId, loadConversations])
 
   useEffect(() => {
+    if (recordingVoice) {
+      discardVoiceOnStopRef.current = true
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current)
+        recordingTimerRef.current = null
+      }
+      const recorder = mediaRecorderRef.current
+      if (recorder && recorder.state !== 'inactive') {
+        recorder.stop()
+      } else {
+        stopRecordingStream()
+      }
+      setRecordingVoice(false)
+    }
     setDraft('')
     setAttachment(null)
     setPartnerTyping(false)
     setPartnerOnline(false)
     loadMessages()
-  }, [activeConversationId, loadMessages])
+  }, [activeConversationId, loadMessages, recordingVoice])
 
   useEffect(() => {
     if (!currentUserId || !isSupabaseConfigured) return undefined
@@ -770,11 +837,148 @@ export default function MessagesPage() {
     }, 1200)
   }
 
+  function stopRecordingStream() {
+    const stream = recordingStreamRef.current
+    if (!stream) return
+    for (const track of stream.getTracks()) {
+      track.stop()
+    }
+    recordingStreamRef.current = null
+  }
+
+  function stopVoiceRecording(discardRecording = false) {
+    discardVoiceOnStopRef.current = discardRecording
+    const recorder = mediaRecorderRef.current
+    if (!recorder) {
+      if (discardRecording) {
+        stopRecordingStream()
+      }
+      return
+    }
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current)
+      recordingTimerRef.current = null
+    }
+    if (recorder.state !== 'inactive') {
+      recorder.stop()
+      return
+    }
+    stopRecordingStream()
+  }
+
+  async function startVoiceRecording() {
+    if (!canMessage || sending) return
+    if (recordingVoice) return
+    if (typeof window === 'undefined' || !window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) {
+      setComposerFeedback('Voice note recording is not supported on this device.')
+      return
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      recordingStreamRef.current = stream
+
+      const mimeCandidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']
+      const supportedMimeType = mimeCandidates.find((mimeType) => window.MediaRecorder.isTypeSupported?.(mimeType)) || ''
+      const recorder = supportedMimeType
+        ? new window.MediaRecorder(stream, { mimeType: supportedMimeType })
+        : new window.MediaRecorder(stream)
+
+      mediaRecorderRef.current = recorder
+      recordingChunksRef.current = []
+      recordingSecondsRef.current = 0
+      discardVoiceOnStopRef.current = false
+      setRecordingSeconds(0)
+      setRecordingVoice(true)
+      setComposerFeedback('Recording voice note...')
+      setAttachment(null)
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recordingChunksRef.current.push(event.data)
+        }
+      }
+
+      recorder.onerror = () => {
+        setRecordingVoice(false)
+        setComposerFeedback('Voice note recording failed.')
+        stopRecordingStream()
+      }
+
+      recorder.onstop = () => {
+        setRecordingVoice(false)
+        if (recordingTimerRef.current) {
+          clearInterval(recordingTimerRef.current)
+          recordingTimerRef.current = null
+        }
+        const chunks = [...recordingChunksRef.current]
+        recordingChunksRef.current = []
+        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+        stopRecordingStream()
+
+        if (discardVoiceOnStopRef.current) {
+          discardVoiceOnStopRef.current = false
+          return
+        }
+
+        if (!blob.size) {
+          setComposerFeedback('Voice note recording is empty.')
+          return
+        }
+        if (blob.size > MAX_VOICE_NOTE_BYTES) {
+          setComposerFeedback('Voice note is too large. Keep it under 2MB.')
+          return
+        }
+
+        const reader = new FileReader()
+        reader.onload = () => {
+          setAttachment({
+            name: `voice-note-${Date.now()}.webm`,
+            previewUrl: String(reader.result || ''),
+            type: blob.type || 'audio/webm',
+            kind: 'audio',
+            durationSeconds: recordingSecondsRef.current,
+          })
+          setComposerFeedback('Voice note ready. Tap Send.')
+        }
+        reader.onerror = () => {
+          setComposerFeedback('Failed to process voice note recording.')
+        }
+        reader.readAsDataURL(blob)
+      }
+
+      recorder.start()
+
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current)
+      }
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((currentSeconds) => {
+          const nextSeconds = currentSeconds + 1
+          recordingSecondsRef.current = nextSeconds
+          if (nextSeconds >= MAX_VOICE_NOTE_SECONDS) {
+            stopVoiceRecording()
+            return MAX_VOICE_NOTE_SECONDS
+          }
+          return nextSeconds
+        })
+      }, 1000)
+    } catch {
+      setRecordingVoice(false)
+      setComposerFeedback('Microphone access is blocked. Allow access and try again.')
+      stopRecordingStream()
+    }
+  }
+
   function clearAttachment() {
     setAttachment(null)
   }
 
   function handleAttachmentSelect(fileList) {
+    if (recordingVoice) {
+      stopVoiceRecording(true)
+    }
+
     const file = fileList?.[0]
     if (!file) return
 
@@ -982,6 +1186,10 @@ export default function MessagesPage() {
 
   async function handleSend(event) {
     event.preventDefault()
+    if (recordingVoice) {
+      setComposerFeedback('Stop recording before sending your voice note.')
+      return
+    }
     const trimmedDraft = draft.trim()
     if (!trimmedDraft && !attachment) return
 
@@ -1223,6 +1431,25 @@ export default function MessagesPage() {
                   ) : null}
                 </div>
               ) : null}
+              {showSafetyPopup ? (
+                <div className="mt-3 rounded-xl border border-[#f0d58c] bg-[#fff8e6] p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-xs font-semibold text-[#7a5600]">
+                      Avoid paying in advance, even for delivery.
+                    </p>
+                    <button
+                      type="button"
+                      className="text-[11px] font-semibold text-[#7a5600] hover:underline"
+                      onClick={() => setDismissedSafetyPopup(true)}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                  <p className="mt-1 text-[11px] text-[#8b6b1e]">
+                    Meet in safe public places and verify items before releasing payment.
+                  </p>
+                </div>
+              ) : null}
             </header>
 
             <div
@@ -1248,14 +1475,20 @@ export default function MessagesPage() {
                     >
                       {message.content ? <p className="whitespace-pre-wrap break-words">{message.content}</p> : null}
                       {message.image_url ? (
-                        <img
-                          src={message.image_url}
-                          alt="Attachment"
-                          className="mt-2 max-h-52 w-full rounded-2xl object-cover"
-                          onError={(event) => {
-                            event.currentTarget.src = '/placeholders/listing-home.svg'
-                          }}
-                        />
+                        isAudioMediaUrl(message.image_url) ? (
+                          <audio className="mt-2 w-full min-w-[210px]" controls preload="metadata" src={message.image_url}>
+                            Your browser does not support voice note playback.
+                          </audio>
+                        ) : (
+                          <img
+                            src={message.image_url}
+                            alt="Attachment"
+                            className="mt-2 max-h-52 w-full rounded-2xl object-cover"
+                            onError={(event) => {
+                              event.currentTarget.src = '/placeholders/listing-home.svg'
+                            }}
+                          />
+                        )
                       ) : null}
                       {mine ? (
                         <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px] text-white/90">
@@ -1291,7 +1524,18 @@ export default function MessagesPage() {
                       Remove
                     </button>
                   </div>
-                  <img src={attachment.previewUrl} alt={attachment.name} className="max-h-44 w-full rounded-xl object-cover" />
+                  {isAudioMediaUrl(attachment.previewUrl) ? (
+                    <>
+                      <audio className="w-full" controls preload="metadata" src={attachment.previewUrl}>
+                        Your browser does not support voice note playback.
+                      </audio>
+                      <p className="mt-1 text-[11px] text-muted">
+                        Voice note duration: {formatVoiceDuration(attachment.durationSeconds)}
+                      </p>
+                    </>
+                  ) : (
+                    <img src={attachment.previewUrl} alt={attachment.name} className="max-h-44 w-full rounded-xl object-cover" />
+                  )}
                 </div>
               ) : null}
 
@@ -1311,6 +1555,19 @@ export default function MessagesPage() {
                     onChange={(event) => handleAttachmentSelect(event.target.files)}
                   />
                 </label>
+                <button
+                  type="button"
+                  className={`inline-flex h-10 items-center justify-center rounded-full border px-3 text-xs font-semibold transition ${
+                    recordingVoice
+                      ? 'border-[#d93025] bg-[#ffe9e6] text-[#b3261e]'
+                      : 'border-line bg-white text-muted hover:border-accent hover:text-accent'
+                  } ${!canMessage || sending ? 'opacity-50' : ''}`}
+                  onClick={recordingVoice ? stopVoiceRecording : startVoiceRecording}
+                  disabled={!canMessage || sending}
+                  title={recordingVoice ? 'Stop recording' : 'Record voice note'}
+                >
+                  {recordingVoice ? 'Stop' : 'Mic'}
+                </button>
                 <input
                   className="input h-10 rounded-full border-line bg-[#f2f4f7] px-4 focus:ring-0"
                   placeholder={composerPlaceholder}
@@ -1326,6 +1583,11 @@ export default function MessagesPage() {
                   {sending ? '...' : 'Send'}
                 </button>
               </div>
+              {recordingVoice ? (
+                <p className="mt-2 text-xs font-semibold text-[#b3261e]">
+                  Recording voice note... {formatVoiceDuration(recordingSeconds)} / {formatVoiceDuration(MAX_VOICE_NOTE_SECONDS)}
+                </p>
+              ) : null}
               {composerFeedback ? <p className="mt-2 text-xs text-muted">{composerFeedback}</p> : null}
             </form>
           </>
