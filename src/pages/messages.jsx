@@ -1557,16 +1557,27 @@ export default function MessagesPage() {
                 </label>
                 <button
                   type="button"
-                  className={`inline-flex h-10 items-center justify-center rounded-full border px-3 text-xs font-semibold transition ${
+                  className={`inline-flex h-10 w-10 items-center justify-center rounded-full border px-0 transition ${
                     recordingVoice
                       ? 'border-[#d93025] bg-[#ffe9e6] text-[#b3261e]'
                       : 'border-line bg-white text-muted hover:border-accent hover:text-accent'
                   } ${!canMessage || sending ? 'opacity-50' : ''}`}
                   onClick={recordingVoice ? stopVoiceRecording : startVoiceRecording}
                   disabled={!canMessage || sending}
+                  aria-label={recordingVoice ? 'Stop recording' : 'Record voice note'}
                   title={recordingVoice ? 'Stop recording' : 'Record voice note'}
                 >
-                  {recordingVoice ? 'Stop' : 'Mic'}
+                  {recordingVoice ? (
+                    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-4 w-4">
+                      <rect x="5.8" y="5.8" width="8.4" height="8.4" rx="1.8" fill="currentColor" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-4 w-4">
+                      <rect x="7" y="3.2" width="6" height="9" rx="3" stroke="currentColor" strokeWidth="1.6" />
+                      <path d="M5 9.9a5 5 0 0 0 10 0" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                      <path d="M10 14.9v2.3M7.5 17.2h5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                    </svg>
+                  )}
                 </button>
                 <input
                   className="input h-10 rounded-full border-line bg-[#f2f4f7] px-4 focus:ring-0"
