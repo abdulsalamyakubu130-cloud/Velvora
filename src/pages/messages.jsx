@@ -392,7 +392,12 @@ export default function MessagesPage() {
     }
 
     const partnerName = activeConversation?.partner_name || 'User'
-    const mappedMessages = (data || []).map((row) => ({
+    const mappedMessages = (data || [])
+      .filter((row) => {
+        const content = String(row.content || '').trim()
+        return Boolean(content || row.image_url)
+      })
+      .map((row) => ({
       id: row.id,
       sender_id: row.sender_id,
       sender_name: String(row.sender_id) === currentUserId ? 'Me' : partnerName,
@@ -400,7 +405,7 @@ export default function MessagesPage() {
       image_url: row.image_url,
       created_at: row.created_at,
       is_seen: Boolean(row.is_seen),
-    }))
+      }))
 
     setMessages(mappedMessages)
   }, [activeConversation?.partner_name, activeConversationId, currentUserId])
@@ -530,17 +535,21 @@ export default function MessagesPage() {
         { event: 'UPDATE', schema: 'public', table: 'messages', filter: `conversation_id=eq.${activeConversationId}` },
         (payload) => {
           const updatedMessageId = String(payload.new.id)
+          const updatedContent = String(payload.new.content || '').trim()
+          const hasVisiblePayload = Boolean(updatedContent || payload.new.image_url)
           setMessages((currentMessages) =>
-            currentMessages.map((message) =>
-              String(message.id) === updatedMessageId
-                ? {
-                    ...message,
-                    is_seen: Boolean(payload.new.is_seen),
-                    content: payload.new.content,
-                    image_url: payload.new.image_url,
-                  }
-                : message,
-            ),
+            hasVisiblePayload
+              ? currentMessages.map((message) =>
+                  String(message.id) === updatedMessageId
+                    ? {
+                        ...message,
+                        is_seen: Boolean(payload.new.is_seen),
+                        content: payload.new.content,
+                        image_url: payload.new.image_url,
+                      }
+                    : message,
+                )
+              : currentMessages.filter((message) => String(message.id) !== updatedMessageId),
           )
         },
       )
@@ -848,6 +857,19 @@ export default function MessagesPage() {
     }
 
     setDeletingMessageId('')
+
+    if (!deleteConfirmed) {
+      const { error: softDeleteError } = await supabase
+        .from('messages')
+        .update({ content: null, image_url: null })
+        .eq('id', normalizedMessageId)
+        .eq('sender_id', currentUserId)
+
+      if (!softDeleteError) {
+        deleteConfirmed = true
+        setComposerFeedback('Message removed from chat. Permanent delete is currently restricted.')
+      }
+    }
 
     if (!deleteConfirmed) {
       setComposerFeedback('Unable to permanently delete this message right now. Try again.')

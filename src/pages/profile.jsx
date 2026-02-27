@@ -82,6 +82,16 @@ function normalizeProfileHandle(value) {
   return decoded.trim().replace(/^@+/, '')
 }
 
+function formatDateTime(value) {
+  if (!value) return 'unknown time'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'unknown time'
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date)
+}
+
 export default function ProfilePage() {
   const [statusFilter, setStatusFilter] = useState('available')
   const [isFollowing, setIsFollowing] = useState(false)
