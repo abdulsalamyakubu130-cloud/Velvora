@@ -75,6 +75,12 @@ export default function MessagesPage() {
     () => conversations.find((conversation) => conversation.id === activeConversationId) || null,
     [activeConversationId, conversations],
   )
+  const hiddenMessagesStorageKey = useMemo(
+    () => (currentUserId ? `velvora:hidden-messages:${currentUserId}` : ''),
+    [currentUserId],
+  )
+  const [hiddenMessageIds, setHiddenMessageIds] = useState([])
+  const hiddenMessageIdSet = useMemo(() => new Set(hiddenMessageIds.map(String)), [hiddenMessageIds])
   const activeRequestStatus = activeConversation?.request_status || 'none'
   const activeViewerIsRequester = activeConversation?.requester_id === currentUserId
   const activeViewerIsTarget = activeConversation?.target_user_id === currentUserId
@@ -93,6 +99,48 @@ export default function MessagesPage() {
     if (typeof window === 'undefined') return
     window.dispatchEvent(new Event('velvora:refresh-unread-messages'))
   }, [])
+
+  const hideMessageLocally = useCallback(
+    (messageId) => {
+      const normalizedMessageId = String(messageId || '')
+      if (!normalizedMessageId) return
+      setHiddenMessageIds((currentIds) => {
+        if (currentIds.includes(normalizedMessageId)) return currentIds
+        const nextIds = [...currentIds, normalizedMessageId].slice(-800)
+        if (typeof window !== 'undefined' && hiddenMessagesStorageKey) {
+          try {
+            window.localStorage.setItem(hiddenMessagesStorageKey, JSON.stringify(nextIds))
+          } catch {
+            // Ignore localStorage write failures and continue.
+          }
+        }
+        return nextIds
+      })
+    },
+    [hiddenMessagesStorageKey],
+  )
+
+  useEffect(() => {
+    if (!hiddenMessagesStorageKey) {
+      setHiddenMessageIds([])
+      return
+    }
+    if (typeof window === 'undefined') {
+      setHiddenMessageIds([])
+      return
+    }
+    try {
+      const raw = window.localStorage.getItem(hiddenMessagesStorageKey)
+      const parsed = raw ? JSON.parse(raw) : []
+      if (Array.isArray(parsed)) {
+        setHiddenMessageIds(parsed.map((id) => String(id)))
+      } else {
+        setHiddenMessageIds([])
+      }
+    } catch {
+      setHiddenMessageIds([])
+    }
+  }, [hiddenMessagesStorageKey])
 
   const markConversationNotificationsRead = useCallback(async (conversationId) => {
     if (!conversationId || !currentUserId || !isSupabaseConfigured) return
@@ -393,6 +441,7 @@ export default function MessagesPage() {
 
     const partnerName = activeConversation?.partner_name || 'User'
     const mappedMessages = (data || [])
+      .filter((row) => !hiddenMessageIdSet.has(String(row.id)))
       .filter((row) => {
         const content = String(row.content || '').trim()
         return Boolean(content || row.image_url)
@@ -408,7 +457,7 @@ export default function MessagesPage() {
       }))
 
     setMessages(mappedMessages)
-  }, [activeConversation?.partner_name, activeConversationId, currentUserId])
+  }, [activeConversation?.partner_name, activeConversationId, currentUserId, hiddenMessageIdSet])
 
   useEffect(() => {
     loadConversations()
@@ -512,6 +561,7 @@ export default function MessagesPage() {
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${activeConversationId}` },
         (payload) => {
+          if (hiddenMessageIdSet.has(String(payload.new.id))) return
           const nextMessage = {
             id: payload.new.id,
             sender_id: payload.new.sender_id,
@@ -537,8 +587,11 @@ export default function MessagesPage() {
           const updatedMessageId = String(payload.new.id)
           const updatedContent = String(payload.new.content || '').trim()
           const hasVisiblePayload = Boolean(updatedContent || payload.new.image_url)
-          setMessages((currentMessages) =>
-            hasVisiblePayload
+          setMessages((currentMessages) => {
+            if (hiddenMessageIdSet.has(updatedMessageId)) {
+              return currentMessages.filter((message) => String(message.id) !== updatedMessageId)
+            }
+            return hasVisiblePayload
               ? currentMessages.map((message) =>
                   String(message.id) === updatedMessageId
                     ? {
@@ -549,8 +602,8 @@ export default function MessagesPage() {
                       }
                     : message,
                 )
-              : currentMessages.filter((message) => String(message.id) !== updatedMessageId),
-          )
+              : currentMessages.filter((message) => String(message.id) !== updatedMessageId)
+          })
         },
       )
       .on(
@@ -620,7 +673,7 @@ export default function MessagesPage() {
       channelRef.current = null
       supabase.removeChannel(channel)
     }
-  }, [activeConversation?.partner_id, activeConversation?.partner_name, activeConversationId, currentUserId, loadConversations, loadMessages])
+  }, [activeConversation?.partner_id, activeConversation?.partner_name, activeConversationId, currentUserId, hiddenMessageIdSet, loadConversations, loadMessages])
 
   useEffect(() => {
     if (!activeConversationId || !currentUserId) return
@@ -828,16 +881,11 @@ export default function MessagesPage() {
       .from('messages')
       .delete()
       .eq('id', normalizedMessageId)
+      .eq('sender_id', currentUserId)
       .select('id')
     let deleteConfirmed = Array.isArray(deletedRows) && deletedRows.length > 0
 
-    if (hardDeleteError) {
-      setDeletingMessageId('')
-      setComposerFeedback(hardDeleteError.message || 'Failed to delete message permanently.')
-      return
-    }
-
-    if (!deleteConfirmed) {
+    if (!deleteConfirmed && !hardDeleteError) {
       // Retry existence checks to avoid false negatives when reads lag behind writes.
       for (let attempt = 0; attempt < 3 && !deleteConfirmed; attempt += 1) {
         await new Promise((resolve) => {
@@ -871,15 +919,17 @@ export default function MessagesPage() {
       }
     }
 
-    if (!deleteConfirmed) {
-      setComposerFeedback('Unable to permanently delete this message right now. Try again.')
-      await loadMessages({ silent: true })
-      return
-    }
-
     setMessages((currentMessages) =>
       currentMessages.filter((message) => String(message.id) !== normalizedMessageId),
     )
+    if (!deleteConfirmed) {
+      hideMessageLocally(normalizedMessageId)
+      setComposerFeedback(
+        hardDeleteError?.message
+          ? 'Message hidden from your chat. Permanent delete is currently blocked by database policy.'
+          : 'Message hidden from your chat. Permanent delete is currently unavailable.',
+      )
+    }
     await loadConversations({ silent: true })
     refreshUnreadMessageBadge()
   }
