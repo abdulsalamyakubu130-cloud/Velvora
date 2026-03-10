@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-dom'
+import { SpeedInsights } from '@vercel/speed-insights/react'
 import TopBar from '@/components/top-bar'
 import MobileNav from '@/components/mobile-nav'
 import RequireAdmin from '@/components/require-admin'
@@ -178,6 +179,7 @@ export default function App() {
         <AuthProvider>
           <BrowserRouter>
             <AppLayout />
+            <SpeedInsights />
           </BrowserRouter>
         </AuthProvider>
       </I18nProvider>
